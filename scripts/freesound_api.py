@@ -14,8 +14,6 @@ token = 'dedOJD0nnsIebO5RcNQHqt9fLMElgDWccZi5rqcn'
 
 
 def get_ids_freesound(query, page_num=1, page_size=15, save=True):
-    global file_ids
-    
     query = query
     page_num = int(page_num)
     page_size = int(page_size)
