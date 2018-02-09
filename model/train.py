@@ -28,7 +28,6 @@ LEARNING_RATE = 1e-3
 WAVENET_PARAMS = './wavenet_params.json'
 STARTED_DATESTRING = "{0:%Y-%m-%dT%H-%M-%S}".format(datetime.now())
 SAMPLE_SIZE = 3600
-L2_REGULARIZATION_STRENGTH = 0
 SILENCE_THRESHOLD = 0.3
 EPSILON = 0.001
 MOMENTUM = 0.9
@@ -87,10 +86,6 @@ def get_arguments():
     parser.add_argument('--wavenet_params', type=str, default=WAVENET_PARAMS,
                         help='JSON file with the network parameters. Default: '
                         + WAVENET_PARAMS + '.')
-    parser.add_argument('--l2_regularization_strength', type=float,
-                        default=L2_REGULARIZATION_STRENGTH,
-                        help='Coefficient in the L2 regularization. '
-                        'Default: False')
     parser.add_argument('--momentum', type=float,
                         default=MOMENTUM, help='Specify the momentum to be '
                         'used by sgd or rmsprop optimizer.'
