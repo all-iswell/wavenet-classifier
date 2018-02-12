@@ -1,18 +1,12 @@
 # Binary Audio Classifier adapted from WaveNet
 
----
-
 ## Goal:
 Build a classifier to distinguish sounds of laughing from those of crying.
-
----
 
 ## Status:
 Work in progress.
 * Basic model structure and working training process implemented.
   * Uses temporary dummy data (non-humanlabeled)
-
----
 
 ## TODO:
 * Streamline preprocessing pipeline (mp3 -> TFRecord)
