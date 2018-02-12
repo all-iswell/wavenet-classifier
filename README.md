@@ -23,5 +23,5 @@ Work in progress.
 ---
 
 by John Choi (최정혁), 2018
-based on [this TensorFlow implementation of WaveNet](https://github.com/ibab/tensorflow-wavenet) 
+based on [this TensorFlow implementation of WaveNet](https://github.com/ibab/tensorflow-wavenet)   
 sound sources obtained from [FreeSound](https://www.freesound.org)
