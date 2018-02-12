@@ -281,6 +281,9 @@ def main():
     try:
         for step in range(saved_global_step + 1, args.num_steps):
             start_time = time.time()
+            if step == saved_global_step + 1:
+                run_options = tf.RunOptions(
+                    trace_level=tf.RunOptions.FULL_TRACE)
             if args.store_metadata and step % 50 == 0:
                 # Slow run that stores extra information for debugging.
                 print('Storing metadata')
@@ -308,7 +311,7 @@ def main():
 
             duration = time.time() - start_time
             print("step {:d}:  trainloss = {:.3f}, "
-                  "testloss = {:.4f}, acc = {:.3f}, ({:.3f} sec/step)"
+                  "testloss = {:.3f}, acc = {:.3f}, ({:.3f} sec/step)"
                   .format(step, train_loss_, test_loss_, acc_, duration))
 
             if step % args.checkpoint_every == 0:
@@ -320,8 +323,12 @@ def main():
         # is on its own line.
         print()
     finally:
-        if step > last_saved_step:
+        if step and step > last_saved_step:
             save(saver, sess, logdir, step)
+        elif not step:
+            print("No training performed during session.")
+        else:
+            pass
 
 
 if __name__ == '__main__':
