@@ -12,9 +12,12 @@ import csv
 # project/_data/prelim_data, to work properly.
 # Otherwise the paths must be modified.
 
+# This script writes sample values for all the mp3s to one CSV file.
+# mp3_to_csv.py (the other file) writes each mp3 to a separate CSV.
+
 def write_to_csv(category):
     cat_path = '../_data/prelim_data/{}/'.format(category)
-    
+
     names = [name for name in os.listdir(cat_path)
                    if re.search(r'.mp3$', name)]
 
