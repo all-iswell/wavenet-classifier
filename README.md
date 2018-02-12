@@ -9,6 +9,8 @@ Build a classifier to distinguish sounds of laughing from those of crying.
 
 ## Status:
 Work in progress.
+* Basic model structure and working training process implemented.
+  * Uses temporary dummy data (non-humanlabeled)
 
 ---
 
@@ -16,6 +18,7 @@ Work in progress.
 * Streamline preprocessing pipeline (mp3 -> TFRecord)
 * Process viable dataset for classification (manual editing)
   * Data augmentation (possibly)
+* Refactor code to match Google Cloud Platform ML Engine specifications
 
 ---
 
