@@ -2,36 +2,38 @@
 
 import tensorflow as tf
 
-data_path0 = '../_data/tfrecords/sample_{}_{}.tfrecord'
 
+data_path0 = '../_data/tfrecords/sample_{}_{}_{}.tfrecord'
+sample_size = 16000
 
-def parser(serialized_example, sample_size):
+def parser(serialized_example):
     features = {
+        'idx' : tf.FixedLenFeature([1], tf.int64),
         'samples': tf.FixedLenFeature([sample_size], tf.float32),
-        'laugh': tf.FixedLenFeature([1], tf.float32)
+        'y' : tf.FixedLenFeature([1], tf.float32)
     }
     parsed_feature = tf.parse_single_example(serialized_example, features)
     samples = parsed_feature['samples']
-    laugh = parsed_feature['laugh']
-    return samples, laugh
+    y = parsed_feature['y']
+    idx = parsed_feature['idx']
+    return idx, samples, y
 
 
-def get_tfrecord(name, sample_size, batch_size=1, buffer_size=5000,
-                 repeat=1, seed=None, data_path=None):
+def get_tfrecord(topic='onoff', name='train', sample_size=16000, batch_size=1, buffer_size=5000,
+                 repeat=1, seed=None, data_path=data_path0):
     def parser(serialized_example):
         features = {
+            'idx' : tf.FixedLenFeature([1], tf.int64),
             'samples': tf.FixedLenFeature([sample_size], tf.float32),
-            'laugh': tf.FixedLenFeature([1], tf.float32)
+            'y' : tf.FixedLenFeature([1], tf.float32)
         }
         parsed_feature = tf.parse_single_example(serialized_example, features)
         samples = parsed_feature['samples']
-        laugh = parsed_feature['laugh']
-        return samples, laugh
+        y = parsed_feature['y']
+        idx = parsed_feature['idx']
+        return idx, samples, y
 
-    if data_path:
-        data_path0 = data_path
-    dataset = tf.data.TFRecordDataset(data_path0.format(sample_size, name))\
-                     .map(parser)
+    dataset = tf.data.TFRecordDataset(data_path.format(topic, sample_size, name)).map(parser)
     dataset = dataset.batch(batch_size)
     dataset = dataset.shuffle(buffer_size, seed=seed)
     dataset = dataset.repeat(repeat)

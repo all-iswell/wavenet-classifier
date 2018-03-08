@@ -1,7 +1,7 @@
 #! /home/aeatda/anaconda3/envs/proj3/bin/python
 
 """Training script for modified WaveNet classifier.
-Based on binary dataset with crying/laughing labels.
+Based on binary dataset with labels.
 
 """
 
@@ -19,16 +19,15 @@ from tensorflow.python.client import timeline
 
 from wavenet import WaveNetModel, get_tfrecord
 
-BATCH_SIZE = 1
-DATA_PATH = '../_data/tfrecords/sample_{}_{}.tfrecord'
+BATCH_SIZE = 40
+DATA_PATH = '../_data/tfrecords/sample_{}_{}_{}.tfrecord'
 LOGDIR_ROOT = './logdir'
 CHECKPOINT_EVERY = 50
 NUM_STEPS = int(1e5)
 LEARNING_RATE = 1e-3
 WAVENET_PARAMS = './wavenet_params.json'
 STARTED_DATESTRING = "{0:%Y-%m-%dT%H-%M-%S}".format(datetime.now())
-SAMPLE_SIZE = 3600
-SILENCE_THRESHOLD = 0.3
+SAMPLE_SIZE = 16000
 EPSILON = 0.001
 MOMENTUM = 0.9
 MAX_TO_KEEP = 5
@@ -217,8 +216,8 @@ def main():
     train_itr = data_train.make_one_shot_iterator()
     test_itr = data_test.make_one_shot_iterator()
 
-    train_batch, train_label = train_itr.get_next()
-    test_batch, test_label = test_itr.get_next()
+    _, train_batch, train_label = train_itr.get_next()
+    _, test_batch, test_label = test_itr.get_next()
 
     train_batch = tf.reshape(train_batch, [-1, train_batch.shape[1], 1])
     test_batch = tf.reshape(test_batch, [-1, test_batch.shape[1], 1])
@@ -256,9 +255,9 @@ def main():
 
     # Set up session
     sess = tf.Session(config=tf.ConfigProto(log_device_placement=False))
-    init = tf.global_variables_initializer()
-    init2 = tf.local_variables_initializer()
-    sess.run([init, init2])
+    init_global = tf.global_variables_initializer()
+    init_local = tf.local_variables_initializer()
+    sess.run([init_global, init_local])
 
     # Saver for storing checkpoints of the model.
     saver = tf.train.Saver(var_list=tf.trainable_variables(),
