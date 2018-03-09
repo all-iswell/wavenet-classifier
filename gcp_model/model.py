@@ -512,24 +512,12 @@ def input_fn(filenames,
 
 
 def model_fn(mode,
+             net,  # WaveNetModel
              input_batch,
              labels,
-             num_samples,
              learning_rate=1e-3,
              epsilon=1e-3,
-             momentum=0.9,
-             wavenet_params_path=None,
-             filter_width=2,
-             sample_rate=16000,
-             dilations=[2**x for x in range(10)]*2,
-             residual_channels=16,
-             dilation_channels=16,
-             quantization_channels=256,
-             skip_channels=16,
-             use_biases=True,
-             scalar_input=False,
-             initial_filter_width=32,
-             histograms=True):
+             momentum=0.9):
     """ Model fn"""
 
     if wavenet_params_path:
@@ -538,17 +526,8 @@ def model_fn(mode,
         for key, val in wavenet_params.items():
             exec("{} = {}".format(key, val))
 
-    net = WaveNetModel(batch_size=batch_size,
-                       dilations=dilations,
-                       filter_width=filter_width,
-                       residual_channels=residual_channels,
-                       dilation_channels=dilation_channels,
-                       skip_channels=skip_channels,
-                       histograms=histograms)
-
     outs = net.loss_or_logits(input_batch, labels,
                               get_loss=True, get_logits=True)
-
 
     if mode in (PREDICT, EVAL):
         probs = tf.nn.sigmoid(outs['logits'])
