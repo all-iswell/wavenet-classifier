@@ -1,334 +1,578 @@
 #! /home/aeatda/anaconda3/envs/proj3/bin/python
 
-"""Training script for modified WaveNet classifier.
-Based on binary dataset with labels.
-
-"""
-
-from __future__ import print_function
-
-import argparse
-from datetime import datetime
-import json
-import os
-import sys
-import time
-
 import tensorflow as tf
-from tensorflow.python.client import timeline
+import json
 
-from wavenet import WaveNetModel, get_tfrecord
-
-BATCH_SIZE = 40
-DATA_PATH = '../_data/tfrecords/sample_{}_{}_{}.tfrecord'
-LOGDIR_ROOT = './logdir'
-CHECKPOINT_EVERY = 50
-NUM_STEPS = int(1e5)
-LEARNING_RATE = 1e-3
-WAVENET_PARAMS = './wavenet_params.json'
-STARTED_DATESTRING = "{0:%Y-%m-%dT%H-%M-%S}".format(datetime.now())
-SAMPLE_SIZE = 16000
-EPSILON = 0.001
-MOMENTUM = 0.9
-MAX_TO_KEEP = 5
-METADATA = False
+from .ops import causal_conv
 
 
-def get_arguments():
-    def _str_to_bool(s):
-        """Convert string to bool (in argparse context)."""
-        if s.lower() not in ['true', 'false']:
-            raise ValueError('Argument needs to be a '
-                             'boolean, got {}'.format(s))
-        return {'true': True, 'false': False}[s.lower()]
+TRAIN, EVAL, PREDICT = 'TRAIN', 'EVAL', 'PREDICT'
 
-    parser = argparse.ArgumentParser(description='WaveNet example network')
-    parser.add_argument('--sample_size', type=int, default=SAMPLE_SIZE,
-                        help='Number of samples in each tfrecord row.'
-                        ' Default: ' + str(SAMPLE_SIZE) + '.')
-    parser.add_argument('--batch_size', type=int, default=BATCH_SIZE,
-                        help='How many tfrecord rows process at once.'
-                        ' Default: ' + str(BATCH_SIZE) + '.')
-    parser.add_argument('--data_path', type=str, default=DATA_PATH,
-                        help='The path of the laugh/cry tfrecord'
-                        'data.')
-    parser.add_argument('--store_metadata', type=bool, default=METADATA,
-                        help='Whether to store advanced debugging information '
-                        '(execution time, memory consumption) for use with '
-                        'TensorBoard. Default: ' + str(METADATA) + '.')
-    parser.add_argument('--logdir', type=str, default=None,
-                        help='Directory in which to store the logging '
-                        'information for TensorBoard. '
-                        'If the model already exists, it will restore '
-                        'the state and will continue training. '
-                        'Cannot use with --logdir_root and --restore_from.')
-    parser.add_argument('--logdir_root', type=str, default=None,
-                        help='Root directory to place the logging '
-                        'output and generated model. These are stored '
-                        'under the dated subdirectory of --logdir_root. '
-                        'Cannot use with --logdir.')
-    parser.add_argument('--restore_from', type=str, default=None,
-                        help='Directory in which to restore the model from. '
-                        'This creates the new model under the dated directory '
-                        'in --logdir_root. '
-                        'Cannot use with --logdir.')
-    parser.add_argument('--checkpoint_every', type=int,
-                        default=CHECKPOINT_EVERY,
-                        help='How many steps to save each checkpoint after.'
-                        'Default: ' + str(CHECKPOINT_EVERY) + '.')
-    parser.add_argument('--num_steps', type=int, default=NUM_STEPS,
-                        help='Number of training steps. Default: '
-                        + str(NUM_STEPS) + '.')
-    parser.add_argument('--learning_rate', type=float, default=LEARNING_RATE,
-                        help='Learning rate for training. Default: '
-                        + str(LEARNING_RATE) + '.')
-    parser.add_argument('--wavenet_params', type=str, default=WAVENET_PARAMS,
-                        help='JSON file with the network parameters. Default: '
-                        + WAVENET_PARAMS + '.')
-    parser.add_argument('--momentum', type=float,
-                        default=MOMENTUM, help='Specify the momentum to be '
-                        'used by sgd or rmsprop optimizer.'
-                        'Default: ' + str(MOMENTUM) + '.')
-    parser.add_argument('--histograms', type=_str_to_bool, default=False,
-                        help='Whether to store histogram summaries. '
-                        'Default: False')
-    parser.add_argument('--max_checkpoints', type=int, default=MAX_TO_KEEP,
-                        help='Maximum amount of checkpoints that will be '
-                        'kept alive. Default: ' + str(MAX_TO_KEEP) + '.')
-    return parser.parse_args()
+CSV, EXAMPLE, JSON = 'CSV', 'EXAMPLE', 'JSON'
+PREDICTION_MODES = [CSV, EXAMPLE, JSON]
+
+FEATURES = {
+    'idx' : tf.FixedLenFeature([1], tf.int64),
+    'samples': tf.FixedLenFeature([16000], tf.float32),
+    'y' : tf.FixedLenFeature([1], tf.float32)
+}
 
 
-def save(saver, sess, logdir, step):
-    model_name = 'model.ckpt'
-    checkpoint_path = os.path.join(logdir, model_name)
-    print('Storing checkpoint to {} ...'.format(logdir), end="")
-    sys.stdout.flush()
-
-    if not os.path.exists(logdir):
-        os.makedirs(logdir)
-
-    saver.save(sess, checkpoint_path, global_step=step)
-    print(' Done.')
+# Helper functions for WaveNetModel class
+def create_variable(name, shape):
+    '''Create a convolution filter variable with the specified name and shape,
+    and initialize it using Xavier initialization.'''
+    initializer = tf.contrib.layers.xavier_initializer_conv2d()
+    variable = tf.Variable(initializer(shape=shape), name=name)
+    return variable
 
 
-def load(saver, sess, logdir):
-    print("Trying to restore saved checkpoints from {} ...".format(logdir),
-          end="")
-
-    ckpt = tf.train.get_checkpoint_state(logdir)
-    if ckpt:
-        print("  Checkpoint found: {}".format(ckpt.model_checkpoint_path))
-        global_step = int(ckpt.model_checkpoint_path
-                          .split('/')[-1]
-                          .split('-')[-1])
-        print("  Global step was: {}".format(global_step))
-        print("  Restoring...", end="")
-        saver.restore(sess, ckpt.model_checkpoint_path)
-        print(" Done.")
-        return global_step
-    else:
-        print(" No checkpoint found.")
-        return None
+def create_bias_variable(name, shape):
+    '''Create a bias variable with the specified name and shape and initialize
+    it to zero.'''
+    initializer = tf.constant_initializer(value=0.0, dtype=tf.float32)
+    return tf.Variable(initializer(shape=shape), name)
 
 
-def get_default_logdir(logdir_root):
-    logdir = os.path.join(logdir_root, 'train', STARTED_DATESTRING)
-    return logdir
+# scalar_input option does not work for now
+class WaveNetModel(object):
+    '''WaveNet model modified for binary classification.
+    Modified by John Choi (isnbh0)
+
+    Default parameters:
+        dilations = [2**i for i in range(10)] * 2
+        filter_width = 2  # Convolutions just use 2 samples.
+        residual_channels = 16  # Not specified in the paper.
+        dilation_channels = 16  # Not specified in the paper.
+        skip_channels = 16      # Not specified in the paper.
+        net = WaveNetModel(batch_size, dilations, filter_width,
+                           residual_channels, dilation_channels,
+                           skip_channels)
+        loss = net.loss(input_batch)
+    '''
+
+    def __init__(self,
+                 num_samples,
+                 batch_size,
+                 dilations,
+                 filter_width,
+                 residual_channels,
+                 dilation_channels,
+                 skip_channels,
+                 quantization_channels=2**8,
+                 use_biases=False,
+                 scalar_input=False,
+                 initial_filter_width=32,
+                 histograms=False):
+        '''Initializes the WaveNet model.
+
+        Args:
+            num_samples: number of samples in each audio file.
+            batch_size: audio files per batch (recommended: 1).
+            dilations: A list with the dilation factor for each layer.
+            filter_width: The samples that are included in each convolution,
+                after dilating.
+            residual_channels: # filters to learn for the residual.
+            dilation_channels: # filters to learn for the dilated convolution.
+            skip_channels: # filters to learn that contribute to the
+                quantized softmax output.
+            quantization_channels: # amplitude values to use for audio
+                quantization and the corresponding one-hot encoding.
+                Default: 256 (8-bit quantization).
+            use_biases: Whether to add a bias layer to each convolution.
+                Default: False.
+            scalar_input: Whether to use the quantized waveform directly as
+            |   input to the network instead of one-hot encoding it.
+            |   Default: False.
+            *-initial_filter_width: The width of the initial filter of the
+                convolution applied to the scalar input. This is only relevant
+                if scalar_input=True.
+            histograms: Whether to store histograms in the summary.
+                Default: False.
 
 
-def validate_directories(args):
-    """Validate and arrange directory related arguments."""
+        '''
+        self.num_samples = num_samples
+        self.batch_size = batch_size
+        self.dilations = dilations
+        self.filter_width = filter_width
+        self.residual_channels = residual_channels
+        self.dilation_channels = dilation_channels
+        self.quantization_channels = quantization_channels
+        self.use_biases = use_biases
+        self.skip_channels = skip_channels
+        self.scalar_input = scalar_input
+        self.initial_filter_width = initial_filter_width
+        self.histograms = histograms
 
-    # Validation
-    if args.logdir and args.logdir_root:
-        raise ValueError("--logdir and --logdir_root cannot be "
-                         "specified at the same time.")
+        self.receptive_field = WaveNetModel.calculate_receptive_field(
+            self.filter_width, self.dilations, self.scalar_input,
+            self.initial_filter_width)
+        self.variables = self._create_variables()
 
-    if args.logdir and args.restore_from:
-        raise ValueError(
-            "--logdir and --restore_from cannot be specified at the same "
-            "time. This is to keep your previous model from unexpected "
-            "overwrites.\n"
-            "Use --logdir_root to specify the root of the directory which "
-            "will be automatically created with current date and time, or use "
-            "only --logdir to just continue the training from the last "
-            "checkpoint.")
-
-    # Arrangement
-    logdir_root = args.logdir_root
-    if logdir_root is None:
-        logdir_root = LOGDIR_ROOT
-
-    logdir = args.logdir
-    if logdir is None:
-        logdir = get_default_logdir(logdir_root)
-        print('Using default logdir: {}'.format(logdir))
-
-    restore_from = args.restore_from
-    if restore_from is None:
-        # args.logdir and args.restore_from are exclusive,
-        # so it is guaranteed the logdir here is newly created.
-        restore_from = logdir
-
-    return {
-        'logdir': logdir,
-        'logdir_root': args.logdir_root,
-        'restore_from': restore_from
-    }
-
-
-def main():
-    args = get_arguments()
-
-    try:
-        directories = validate_directories(args)
-    except ValueError as e:
-        print("Some arguments are wrong:")
-        print(str(e))
-        return
-
-    logdir = directories['logdir']
-    restore_from = directories['restore_from']
-
-    # Even if we restored the model, we will treat it as new training
-    # if the trained model is written into an arbitrary location.
-    is_overwritten_training = logdir != restore_from
-
-    with open(args.wavenet_params, 'r') as f:
-        wavenet_params = json.load(f)
-
-    # Read TFRecords and create network.
-    tf.reset_default_graph()
-
-    data_train = get_tfrecord(name='train',
-                              sample_size=args.sample_size,
-                              batch_size=args.batch_size,
-                              seed=None,
-                              repeat=None,
-                              data_path=args.data_path)
-    data_test = get_tfrecord(name='test',
-                             sample_size=args.sample_size,
-                             batch_size=args.batch_size,
-                             seed=None,
-                             repeat=None,
-                             data_path=args.data_path)
-
-    train_itr = data_train.make_one_shot_iterator()
-    test_itr = data_test.make_one_shot_iterator()
-
-    _, train_batch, train_label = train_itr.get_next()
-    _, test_batch, test_label = test_itr.get_next()
-
-    train_batch = tf.reshape(train_batch, [-1, train_batch.shape[1], 1])
-    test_batch = tf.reshape(test_batch, [-1, test_batch.shape[1], 1])
-
-    # Create network.
-    net = WaveNetModel(sample_size=args.sample_size,
-                       batch_size=args.batch_size,
-                       dilations=wavenet_params["dilations"],
-                       filter_width=wavenet_params["filter_width"],
-                       residual_channels=wavenet_params["residual_channels"],
-                       dilation_channels=wavenet_params["dilation_channels"],
-                       skip_channels=wavenet_params["skip_channels"],
-                       histograms=args.histograms)
-
-    train_loss = net.loss(train_batch, train_label)
-    test_loss = net.loss(test_batch, test_label)
-
-    # Optimizer
-    # Temporarily set to momentum optimizer
-    optimizer = tf.train.MomentumOptimizer(learning_rate=args.learning_rate,
-                                           momentum=args.momentum)
-    trainable = tf.trainable_variables()
-    optim = optimizer.minimize(train_loss, var_list=trainable)
-
-    # Accuracy of test data
-    pred_test = net.predict_proba(test_batch, audio_only=True)
-    equals = tf.equal(tf.squeeze(test_label), tf.round(pred_test))
-    acc = tf.reduce_mean(tf.cast(equals, tf.float32))
-
-    # Set up logging for TensorBoard.
-    writer = tf.summary.FileWriter(logdir)
-    writer.add_graph(tf.get_default_graph())
-    run_metadata = tf.RunMetadata()
-    summaries = tf.summary.merge_all()
-
-    # Set up session
-    sess = tf.Session(config=tf.ConfigProto(log_device_placement=False))
-    init_global = tf.global_variables_initializer()
-    init_local = tf.local_variables_initializer()
-    sess.run([init_global, init_local])
-
-    # Saver for storing checkpoints of the model.
-    saver = tf.train.Saver(var_list=tf.trainable_variables(),
-                           max_to_keep=args.max_checkpoints)
-
-    try:
-        saved_global_step = load(saver, sess, restore_from)
-        if is_overwritten_training or saved_global_step is None:
-            # The first training step will be saved_global_step + 1,
-            # therefore we put -1 here for new or overwritten trainings.
-            saved_global_step = -1
-    except:
-        print("Something went wrong while restoring checkpoint. "
-              "We will terminate training to avoid accidentally overwriting "
-              "the previous model.")
-        raise
-
-    step = None
-    last_saved_step = saved_global_step
-    try:
-        for step in range(saved_global_step + 1, args.num_steps):
-            start_time = time.time()
-            if step == saved_global_step + 1:
-                run_options = tf.RunOptions(
-                    trace_level=tf.RunOptions.FULL_TRACE)
-            if args.store_metadata and step % 50 == 0:
-                # Slow run that stores extra information for debugging.
-                print('Storing metadata')
-                run_options = tf.RunOptions(
-                    trace_level=tf.RunOptions.FULL_TRACE)
-                summary_, train_loss_, test_loss_, acc_,  _ = sess.run(
-                    [summaries, train_loss, test_loss,
-                     acc, optim],
-                    options=run_options,
-                    run_metadata=run_metadata)
-                writer.add_summary(summary_, step)
-                writer.add_run_metadata(run_metadata,
-                                        'step_{:04d}'.format(step))
-                tl = timeline.Timeline(run_metadata.step_stats)
-                timeline_path = os.path.join(logdir, 'timeline.trace')
-                with open(timeline_path, 'w') as f:
-                    f.write(tl.generate_chrome_trace_format(show_memory=True))
-            else:
-                summary_, train_loss_, test_loss_, acc_,  _ = sess.run(
-                    [summaries, train_loss, test_loss,
-                     acc, optim],
-                    options=run_options,
-                    run_metadata=run_metadata)
-                writer.add_summary(summary_, step)
-
-            duration = time.time() - start_time
-            print("step {:d}:  trainloss = {:.3f}, "
-                  "testloss = {:.3f}, acc = {:.3f}, ({:.3f} sec/step)"
-                  .format(step, train_loss_, test_loss_, acc_, duration))
-
-            if step % args.checkpoint_every == 0:
-                save(saver, sess, logdir, step)
-                last_saved_step = step
-
-    except KeyboardInterrupt:
-        # Introduce a line break after ^C is displayed so save message
-        # is on its own line.
-        print()
-    finally:
-        if step and step > last_saved_step:
-            save(saver, sess, logdir, step)
-        elif not step:
-            print("No training performed during session.")
+    @staticmethod
+    def calculate_receptive_field(filter_width, dilations, scalar_input,
+                                  initial_filter_width):
+        receptive_field = (filter_width - 1) * sum(dilations) + 1
+        if scalar_input:
+            receptive_field += initial_filter_width - 1
         else:
-            pass
+            receptive_field += filter_width - 1
+        return receptive_field
+
+    def _create_variables(self):
+        '''This function creates all variables used by the network.
+        This allows us to share them between multiple calls to the loss
+        function and generation function.'''
+
+        var = dict()
+
+        with tf.variable_scope('wavenet'):
+            with tf.variable_scope('causal_layer'):
+                layer = dict()
+                if self.scalar_input:
+                    initial_channels = 1
+                    initial_filter_width = self.initial_filter_width
+                else:
+                    initial_channels = self.quantization_channels
+                    initial_filter_width = self.filter_width
+                layer['filter'] = create_variable(
+                    'filter',
+                    [initial_filter_width,
+                     initial_channels,
+                     self.residual_channels])
+                var['causal_layer'] = layer
+
+            var['dilated_stack'] = list()
+            with tf.variable_scope('dilated_stack'):
+                for i, dilation in enumerate(self.dilations):
+                    with tf.variable_scope('layer{}'.format(i)):
+                        current = dict()
+                        current['filter'] = create_variable(
+                            'filter',
+                            [self.filter_width,
+                             self.residual_channels,
+                             self.dilation_channels])
+                        current['gate'] = create_variable(
+                            'gate',
+                            [self.filter_width,
+                             self.residual_channels,
+                             self.dilation_channels])
+                        current['dense'] = create_variable(
+                            'dense',
+                            [1,
+                             self.dilation_channels,
+                             self.residual_channels])
+                        current['skip'] = create_variable(
+                            'skip',
+                            [1,
+                             self.dilation_channels,
+                             self.skip_channels])
+
+                        if self.use_biases:
+                            current['filter_bias'] = create_bias_variable(
+                                'filter_bias',
+                                [self.dilation_channels])
+                            current['gate_bias'] = create_bias_variable(
+                                'gate_bias',
+                                [self.dilation_channels])
+                            current['dense_bias'] = create_bias_variable(
+                                'dense_bias',
+                                [self.residual_channels])
+                            current['skip_bias'] = create_bias_variable(
+                                'slip_bias',
+                                [self.skip_channels])
+
+                        var['dilated_stack'].append(current)
+
+            with tf.variable_scope('postprocessing'):
+                current = dict()
+                current['postprocess1'] = create_variable(
+                    'postprocess1',
+                    [1, self.skip_channels, self.skip_channels])
+                current['postprocess2'] = create_variable(
+                    'postprocess2',
+                    [1, self.skip_channels, 1])  ## returns scalar value
+                if self.use_biases:
+                    current['postprocess1_bias'] = create_bias_variable(
+                        'postprocess1_bias',
+                        [self.skip_channels])
+                    current['postprocess2_bias'] = create_bias_variable(
+                        'postprocess2_bias',
+                        [1])
+                var['postprocessing'] = current
+
+        return var
+
+    def _create_causal_layer(self, input_batch):
+        '''Creates a single causal convolution layer.
+
+        The layer can change the number of channels.
+        '''
+        with tf.name_scope('causal_layer'):
+            weights_filter = self.variables['causal_layer']['filter']
+            return causal_conv(input_batch, weights_filter, 1)
+
+    def _create_dilation_layer(self, input_batch, layer_index, dilation,
+                               output_width):
+        '''Creates a single causal dilated convolution layer.
+
+        Args:
+             input_batch: Input to the dilation layer.
+             layer_index: Integer indicating which layer this is.
+             dilation: Integer specifying the dilation size.
+
+        The layer contains a gated filter that connects to dense output
+        and to a skip connection:
+
+               |-> [gate]   -|        |-> 1x1 conv -> skip output
+               |             |-> (*) -|
+        input -|-> [filter] -|        |-> 1x1 conv -|
+               |                                    |-> (+) -> dense output
+               |------------------------------------|
+
+        Where `[gate]` and `[filter]` are causal convolutions with a
+        non-linear activation at the output. Biases and global conditioning
+        are omitted due to the limits of ASCII art.
+
+        '''
+        variables = self.variables['dilated_stack'][layer_index]
+
+        weights_filter = variables['filter']
+        weights_gate = variables['gate']
+
+        conv_filter = causal_conv(input_batch, weights_filter, dilation)
+        conv_gate = causal_conv(input_batch, weights_gate, dilation)
+
+        if self.use_biases:
+            filter_bias = variables['filter_bias']
+            gate_bias = variables['gate_bias']
+            conv_filter = tf.add(conv_filter, filter_bias)
+            conv_gate = tf.add(conv_gate, gate_bias)
+
+        out = tf.tanh(conv_filter) * tf.sigmoid(conv_gate)
+
+        # The 1x1 conv to produce the residual output
+        weights_dense = variables['dense']
+        transformed = tf.nn.conv1d(
+            out, weights_dense, stride=1, padding="SAME", name="dense")
+
+        # The 1x1 conv to produce the skip output
+        skip_cut = tf.shape(out)[1] - output_width
+        out_skip = tf.slice(out, [0, skip_cut, 0], [-1, -1, -1])
+        weights_skip = variables['skip']
+        skip_contribution = tf.nn.conv1d(
+            out_skip, weights_skip, stride=1, padding="SAME", name="skip")
+
+        if self.use_biases:
+            dense_bias = variables['dense_bias']
+            skip_bias = variables['skip_bias']
+            transformed = transformed + dense_bias
+            skip_contribution = skip_contribution + skip_bias
+
+        if self.histograms:
+            layer = 'layer{}'.format(layer_index)
+            tf.summary.histogram(layer + '_filter', weights_filter)
+            tf.summary.histogram(layer + '_gate', weights_gate)
+            tf.summary.histogram(layer + '_dense', weights_dense)
+            tf.summary.histogram(layer + '_skip', weights_skip)
+            if self.use_biases:
+                tf.summary.histogram(layer + '_biases_filter', filter_bias)
+                tf.summary.histogram(layer + '_biases_gate', gate_bias)
+                tf.summary.histogram(layer + '_biases_dense', dense_bias)
+                tf.summary.histogram(layer + '_biases_skip', skip_bias)
+
+        input_cut = tf.shape(input_batch)[1] - tf.shape(transformed)[1]
+        input_batch = tf.slice(input_batch, [0, input_cut, 0], [-1, -1, -1])
+
+        return skip_contribution, input_batch + transformed
+
+    def _generator_conv(self, input_batch, state_batch, weights):
+        '''Perform convolution for a single convolutional processing step.'''
+        # TODO generalize to filter_width > 2
+        past_weights = weights[0, :, :]
+        curr_weights = weights[1, :, :]
+        output = tf.matmul(state_batch, past_weights) + tf.matmul(
+            input_batch, curr_weights)
+        return output
+
+    def _generator_causal_layer(self, input_batch, state_batch):
+        with tf.name_scope('causal_layer'):
+            weights_filter = self.variables['causal_layer']['filter']
+            output = self._generator_conv(
+                input_batch, state_batch, weights_filter)
+        return output
+
+    def _generator_dilation_layer(self, input_batch, state_batch, layer_index,
+                                  dilation):
+        variables = self.variables['dilated_stack'][layer_index]
+
+        weights_filter = variables['filter']
+        weights_gate = variables['gate']
+        output_filter = self._generator_conv(
+            input_batch, state_batch, weights_filter)
+        output_gate = self._generator_conv(
+            input_batch, state_batch, weights_gate)
+
+        if self.use_biases:
+            output_filter = output_filter + variables['filter_bias']
+            output_gate = output_gate + variables['gate_bias']
+
+        out = tf.tanh(output_filter) * tf.sigmoid(output_gate)
+
+        weights_dense = variables['dense']
+        transformed = tf.matmul(out, weights_dense[0, :, :])
+        if self.use_biases:
+            transformed = transformed + variables['dense_bias']
+
+        weights_skip = variables['skip']
+        skip_contribution = tf.matmul(out, weights_skip[0, :, :])
+        if self.use_biases:
+            skip_contribution = skip_contribution + variables['skip_bias']
+
+        return skip_contribution, input_batch + transformed
+
+    def _create_network(self, input_batch):
+        '''Construct the WaveNet network.'''
+        outputs = []
+        current_layer = input_batch
+
+        # Pre-process the input with a regular convolution
+        current_layer = self._create_causal_layer(current_layer)
+
+        output_width = tf.shape(input_batch)[1] - self.receptive_field + 1
+
+        # Add all defined dilation layers.
+        with tf.name_scope('dilated_stack'):
+            for layer_index, dilation in enumerate(self.dilations):
+                with tf.name_scope('layer{}'.format(layer_index)):
+                    output, current_layer = self._create_dilation_layer(
+                        current_layer, layer_index, dilation,
+                        output_width)
+                    outputs.append(output)
+
+        with tf.name_scope('postprocessing'):
+            # Perform (+) -> ReLU -> 1x1 conv -> ReLU -> 1x1 conv to
+            # postprocess the output.
+            w1 = self.variables['postprocessing']['postprocess1']
+            w2 = self.variables['postprocessing']['postprocess2']
+            if self.use_biases:
+                b1 = self.variables['postprocessing']['postprocess1_bias']
+                b2 = self.variables['postprocessing']['postprocess2_bias']
+
+            if self.histograms:
+                tf.summary.histogram('postprocess1_weights', w1)
+                tf.summary.histogram('postprocess2_weights', w2)
+                if self.use_biases:
+                    tf.summary.histogram('postprocess1_biases', b1)
+                    tf.summary.histogram('postprocess2_biases', b2)
+
+            # We skip connections from the outputs of each layer, adding them
+            # all up here.
+            total = sum(outputs)
+            transformed1 = tf.nn.relu(total)
+            conv1 = tf.nn.conv1d(transformed1, w1, stride=1, padding="SAME")
+            if self.use_biases:
+                conv1 = tf.add(conv1, b1)
+            transformed2 = tf.nn.relu(conv1)
+            conv2 = tf.nn.conv1d(transformed2, w2, stride=1, padding="SAME")
+            if self.use_biases:
+                conv2 = tf.add(conv2, b2)
+
+            ## ADDED CODE HERE. ******************************
+            ## RELU activation before going to dense node
+            transformed3 = tf.nn.relu(conv2)
+
+            ## Reshape to 2-D tensor with dimensions
+            ## batch_size, num_samples
+            ## shape[1] constant here so we can use dense
+            shape = [tf.shape(transformed3)[0],
+                     self.num_samples - sum(self.dilations) - 1]
+            transformed3 = tf.reshape(transformed3, shape)
+
+            ## Add dense layer to transform from
+            ## batch_size x num_samples 2-D array to
+            ## batch_size 1-D array
+            final = tf.layers.dense(transformed3, units=1, reuse=tf.AUTO_REUSE,
+                                    name='final_out')
+        return final
+
+    def _one_hot(self, input_batch, batch_size=None):
+        '''One-hot encodes the waveform amplitudes.
+
+        This allows the definition of the network as a categorical distribution
+        over a finite set of possible amplitudes.
+        '''
+        if not batch_size:
+            batch_size = self.batch_size
+
+        with tf.name_scope('one_hot_encode'):
+            encoded = tf.one_hot(
+                input_batch,
+                depth=self.quantization_channels,
+                dtype=tf.float32)
+            shape = [batch_size, -1, self.quantization_channels]
+            encoded = tf.reshape(encoded, shape)
+        return encoded
+
+    def predict_proba(self, input_batch, name='wavenet'):
+        '''Computes the probability of waveform being LAUGHTER.
+           Necessary for evaluation with test data.'''
+
+        logits = self.loss_or_logits(input_batch,
+                                    get_loss=False,
+                                    get_logits=True)['logits']
+        logits = tf.reshape(logits, [-1])
+        out = tf.nn.sigmoid(logits)
+        return out
+
+    def loss_or_logits(self,
+             input_batch,
+             input_label=None, get_loss=True, get_logits=False,
+             name='wavenet'):
+        '''Creates a WaveNet network and
+        returns crossentropy loss and/or logits.
+        If no input_label is given, return logits only.
+        The variables are all scoped to the given name.
+        '''
+        if input_label is None:
+            get_loss, get_logits = False, True
+
+        outputs = {}
+
+        with tf.name_scope(name):
+            input_audio = tf.to_int32(input_batch)
+            encoded = self._one_hot(input_audio)
+            if get_loss:
+                input_label = tf.reshape(input_label, [-1, 1, 1])
+
+            if self.scalar_input:
+                network_input = tf.reshape(
+                    tf.cast(input_batch, tf.float32),
+                    [self.batch_size, -1, 1])
+            else:
+                network_input = encoded
+
+            ## shape of raw_output is (batch_size, 1)
+            raw_output = self._create_network(network_input)
+
+            if get_logits:
+                outputs['logits'] = tf.reshape(raw_output,
+                                               [self.batch_size])
+            if get_loss:
+                with tf.name_scope('loss'):
+                    ## format the target values
+                    target_output = tf.reshape(input_label,
+                                               [self.batch_size])
+                    ## logits
+                    prediction = tf.reshape(raw_output,
+                                            [self.batch_size])
+
+                    loss = tf.nn.sigmoid_cross_entropy_with_logits(
+                        logits=prediction,
+                        labels=target_output)
+                    reduced_loss = tf.reduce_mean(loss)
+
+                    tf.summary.scalar('loss', reduced_loss)
+
+                    outputs['loss'] = reduced_loss
+        return outputs
 
 
-if __name__ == '__main__':
-    main()
+def parser(serialized_example):
+    parsed_feature = tf.parse_single_example(serialized_example, FEATURES)
+    samples = parsed_feature['samples']
+    y = parsed_feature['y']
+    idx = parsed_feature['idx']
+    return idx, samples, y
+
+
+def input_fn(filenames,
+             num_epochs=None,
+             shuffle=True,
+             batch_size=40):
+    """
+    Generate features and labels for training or evaluation.
+    Args:
+        filenames: str list of TFRecord files to read from
+        num_epochs: how many times to loop through the data
+        shuffle: whether to shuffle data
+        batch_size: size of batches used in gradient calculation
+    Returns:
+        (audio, labels) tuple
+    """
+    dataset = tf.data.TFRecordDataset(filenames).map(parser)
+
+    if shuffle:
+        dataset = dataset.shuffle(buffer_size=batch_size * 10)
+    dataset = dataset.repeat(num_epochs)
+    dataset = dataset.batch(batch_size)
+
+    itr = dataset.make_one_shot_iterator()
+    idx, samples, label = itr.get_next()
+    return idx, samples, label
+
+
+def model_fn(mode,
+             net,  # WaveNetModel
+             input_batch,
+             labels,
+             learning_rate=1e-3,
+             epsilon=1e-3,
+             momentum=0.9):
+    """ Model fn"""
+
+    outs = net.loss_or_logits(input_batch, labels,
+                              get_loss=True, get_logits=True)
+
+    if mode in (PREDICT, EVAL):
+        probs = tf.nn.sigmoid(outs['logits'])
+        pred = tf.round(probs)
+
+    if mode in (TRAIN, EVAL):
+        global_step = tf.train.get_or_create_global_step()
+
+    if mode == PREDICT:
+        return {
+            'predictions': pred,
+            'confidence_1': probs
+        }
+
+    if mode == TRAIN:
+        tf.summary.scalar('loss', outs['loss'])
+        optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate,
+                                               momentum=momentum)
+        trainable = tf.trainable_variables()
+        train_op = optimizer.minimize(outs['loss'],
+                                      var_list=trainable,
+                                      global_step=global_step)
+        return train_op, global_step
+
+    if mode == EVAL:
+        # Return accuracy and cross entropy
+        accuracy = tf.metrics.accuracy(labels, pred)
+
+        equals = tf.equal(tf.squeeze(labels), pred)
+        streaming_accuracy = tf.reduce_mean(tf.cast(equals, tf.float32))
+
+        return {
+            'crossentropy': outs['loss'],
+            'accuracy': accuracy,
+            'streaming_accuracy': streaming_accuracy
+        }
+
+# def csv_serving_input_fn(default_batch_size=None):
+def example_serving_input_fn():
+    filenames = tf.placeholder(tf.string,
+                               shape=[None])
+    dataset = tf.data.TFRecordDataset(filenames).map(parser)
+    itr = dataset.make_one_shot_iterator()
+
+    return itr.get_next(), FEATURES
+
+# def json_serving_input_fn(default_batch_size=None):
+SERVING_INPUT_FUNCTIONS = {
+# JSON: json_serving_input_fn,
+# CSV: csv_serving_input_fn,
+EXAMPLE: example_serving_input_fn
+}

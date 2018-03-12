@@ -1,0 +1,2 @@
+FEATURES variable in model.py has hardcorded 16000 length samples feature
+

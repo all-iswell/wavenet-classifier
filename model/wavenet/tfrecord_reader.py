@@ -4,12 +4,12 @@ import tensorflow as tf
 
 
 data_path0 = '../_data/tfrecords/sample_{}_{}_{}.tfrecord'
-sample_size = 16000
+num_samples = 16000
 
 def parser(serialized_example):
     features = {
         'idx' : tf.FixedLenFeature([1], tf.int64),
-        'samples': tf.FixedLenFeature([sample_size], tf.float32),
+        'samples': tf.FixedLenFeature([num_samples], tf.float32),
         'y' : tf.FixedLenFeature([1], tf.float32)
     }
     parsed_feature = tf.parse_single_example(serialized_example, features)
@@ -19,12 +19,12 @@ def parser(serialized_example):
     return idx, samples, y
 
 
-def get_tfrecord(topic='onoff', name='train', sample_size=16000, batch_size=1, buffer_size=5000,
+def get_tfrecord(topic='onoff', name='train', num_samples=16000, batch_size=1, buffer_size=5000,
                  repeat=1, seed=None, data_path=data_path0):
     def parser(serialized_example):
         features = {
             'idx' : tf.FixedLenFeature([1], tf.int64),
-            'samples': tf.FixedLenFeature([sample_size], tf.float32),
+            'samples': tf.FixedLenFeature([num_samples], tf.float32),
             'y' : tf.FixedLenFeature([1], tf.float32)
         }
         parsed_feature = tf.parse_single_example(serialized_example, features)
@@ -33,8 +33,8 @@ def get_tfrecord(topic='onoff', name='train', sample_size=16000, batch_size=1, b
         idx = parsed_feature['idx']
         return idx, samples, y
 
-    dataset = tf.data.TFRecordDataset(data_path.format(topic, sample_size, name)).map(parser)
-    dataset = dataset.batch(batch_size)
+    dataset = tf.data.TFRecordDataset(data_path.format(topic, num_samples, name)).map(parser)
     dataset = dataset.shuffle(buffer_size, seed=seed)
     dataset = dataset.repeat(repeat)
+    dataset = dataset.batch(batch_size)
     return dataset

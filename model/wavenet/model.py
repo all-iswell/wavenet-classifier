@@ -41,7 +41,7 @@ class WaveNetModel(object):
     '''
 
     def __init__(self,
-                 sample_size,
+                 num_samples,
                  batch_size,
                  dilations,
                  filter_width,
@@ -56,7 +56,7 @@ class WaveNetModel(object):
         '''Initializes the WaveNet model.
 
         Args:
-            sample_size: number of samples in each audio file.
+            num_samples: number of samples in each audio file.
             batch_size: audio files per batch (recommended: 1).
             dilations: A list with the dilation factor for each layer.
             filter_width: The samples that are included in each convolution,
@@ -81,7 +81,7 @@ class WaveNetModel(object):
 
 
         '''
-        self.sample_size = sample_size
+        self.num_samples = num_samples
         self.batch_size = batch_size
         self.dilations = dilations
         self.filter_width = filter_width
@@ -373,14 +373,14 @@ class WaveNetModel(object):
             transformed3 = tf.nn.relu(conv2)
 
             ## Reshape to 2-D tensor with dimensions
-            ## batch_size, sample_size
+            ## batch_size, num_samples
             ## shape[1] constant here so we can use dense
             shape = [tf.shape(transformed3)[0],
-                     self.sample_size - sum(self.dilations) - 1]
+                     self.num_samples - sum(self.dilations) - 1]
             transformed3 = tf.reshape(transformed3, shape)
 
             ## Add dense layer to transform from
-            ## batch_size x sample_size 2-D array to
+            ## batch_size x num_samples 2-D array to
             ## batch_size 1-D array
             final = tf.layers.dense(transformed3, units=1, reuse=tf.AUTO_REUSE,
                                     name='final_out')
@@ -412,7 +412,7 @@ class WaveNetModel(object):
                 ## slice off rightmost end of input where labels are stored
                 ## input_batch transformed into input_audio
                 input_audio = tf.slice(waveform, begin=[0, 0, 0],
-                                       size=[-1, self.sample_size, -1])
+                                       size=[-1, self.num_samples, -1])
             else:
                 input_audio = waveform
 
@@ -444,13 +444,13 @@ class WaveNetModel(object):
             if input_label is None:
                 ## slice off rightmost end of input where labels are stored
                 ## input_batch transformed into input_audio
-                ## not using self.sample_size:
+                ## not using self.num_samples:
                 ##     y_idx = tf.shape(input_batch)[1] - 1
                 input_audio = tf.slice(input_batch,
                                        begin=[0, 0, 0],
-                                       size=[-1, self.sample_size, -1])
+                                       size=[-1, self.num_samples, -1])
                 input_label = tf.slice(input_batch,
-                                       begin=[0, self.sample_size, 0],
+                                       begin=[0, self.num_samples, 0],
                                        size=[-1, 1, -1])
             else:
                 input_audio = input_batch

@@ -27,7 +27,7 @@ NUM_STEPS = int(1e5)
 LEARNING_RATE = 1e-3
 WAVENET_PARAMS = './wavenet_params.json'
 STARTED_DATESTRING = "{0:%Y-%m-%dT%H-%M-%S}".format(datetime.now())
-SAMPLE_SIZE = 16000
+NUM_SAMPLES = 16000
 EPSILON = 0.001
 MOMENTUM = 0.9
 MAX_TO_KEEP = 5
@@ -43,9 +43,9 @@ def get_arguments():
         return {'true': True, 'false': False}[s.lower()]
 
     parser = argparse.ArgumentParser(description='WaveNet example network')
-    parser.add_argument('--sample_size', type=int, default=SAMPLE_SIZE,
+    parser.add_argument('--num-samples', type=int, default=NUM_SAMPLES,
                         help='Number of samples in each tfrecord row.'
-                        ' Default: ' + str(SAMPLE_SIZE) + '.')
+                        ' Default: ' + str(NUM_SAMPLES) + '.')
     parser.add_argument('--batch_size', type=int, default=BATCH_SIZE,
                         help='How many tfrecord rows process at once.'
                         ' Default: ' + str(BATCH_SIZE) + '.')
@@ -201,13 +201,13 @@ def main():
     tf.reset_default_graph()
 
     data_train = get_tfrecord(name='train',
-                              sample_size=args.sample_size,
+                              num_samples=args.num_samples,
                               batch_size=args.batch_size,
                               seed=None,
                               repeat=None,
                               data_path=args.data_path)
     data_test = get_tfrecord(name='test',
-                             sample_size=args.sample_size,
+                             num_samples=args.num_samples,
                              batch_size=args.batch_size,
                              seed=None,
                              repeat=None,
@@ -223,7 +223,7 @@ def main():
     test_batch = tf.reshape(test_batch, [-1, test_batch.shape[1], 1])
 
     # Create network.
-    net = WaveNetModel(sample_size=args.sample_size,
+    net = WaveNetModel(num_samples=args.num_samples,
                        batch_size=args.batch_size,
                        dilations=wavenet_params["dilations"],
                        filter_width=wavenet_params["filter_width"],

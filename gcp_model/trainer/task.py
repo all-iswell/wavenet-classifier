@@ -14,28 +14,30 @@ import os
 import sys
 import time
 
+import six
 import tensorflow as tf
 from tensorflow.python.client import timeline
+from tensorflow.python.saved_model import signature_constants as sig_constants
 
-import .model as model
-# from wavenet import WaveNetModel, get_tfrecord
+import trainer.model as model
+
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
-# TODO: CLEAN THIS UP.
+JOB_DIR_ROOT = './job_dir'
+NUM_SAMPLES = 16000
 BATCH_SIZE = 40
-DATA_PATH = '../_data/tfrecords/sample_{}_{}_{}.tfrecord'
-LOGDIR_ROOT = './logdir'
-CHECKPOINT_EVERY = 50
-NUM_STEPS = int(1e5)
-LEARNING_RATE = 1e-3
+TRAIN_STEPS = int(1e5)
+EVAL_FREQUENCY = 50
+# NUM_EPOCHS = 1  # not used
 WAVENET_PARAMS = './wavenet_params.json'
-STARTED_DATESTRING = "{0:%Y-%m-%dT%H-%M-%S}".format(datetime.now())
-SAMPLE_SIZE = 16000
-EPSILON = 0.001
+LEARNING_RATE = 1e-3
 MOMENTUM = 0.9
+# EPSILON = 0.001
+EXPORT_FORMAT = model.EXAMPLE
+STARTED_DATESTRING = "{0:%Y-%m-%dT%H-%M-%S}".format(datetime.now())
 MAX_TO_KEEP = 5
-METADATA = False
+# METADATA = False
 
 
 def get_arguments():
@@ -47,79 +49,90 @@ def get_arguments():
         return {'true': True, 'false': False}[s.lower()]
 
     parser = argparse.ArgumentParser(description='WaveNet example network')
-    parser.add_argument('--sample_size', type=int, default=SAMPLE_SIZE,
-                        help='Number of samples in each tfrecord row.'
-                        ' Default: ' + str(SAMPLE_SIZE) + '.')
-    parser.add_argument('--batch_size', type=int, default=BATCH_SIZE,
-                        help='How many tfrecord rows process at once.'
+    parser.add_argument('--train-files',
+                      required=True,
+                      type=str,
+                      help='Training files local or GCS', nargs='+')
+    parser.add_argument('--eval-files',
+                      required=True,
+                      type=str,
+                      help='Evaluation files local or GCS', nargs='+')
+    parser.add_argument('--job-dir',
+                      type=str,
+                      help="""\
+                      GCS or local dir for checkpoints, exports, and
+                      summaries. Use an existing directory to load a
+                      trained model, or a new directory to retrain""")
+    parser.add_argument('--num-samples', type=int, default=NUM_SAMPLES,
+                        help='Number of samples in each data row.'
+                        ' Default: ' + str(NUM_SAMPLES) + '.')
+    parser.add_argument('--batch-size', type=int, default=BATCH_SIZE,
+                        help='How many examples to process at once.'
                         ' Default: ' + str(BATCH_SIZE) + '.')
-    parser.add_argument('--data_path', type=str, default=DATA_PATH,
-                        help='The path of the laugh/cry tfrecord'
-                        'data.')
-    parser.add_argument('--store_metadata', type=bool, default=METADATA,
-                        help='Whether to store advanced debugging information '
-                        '(execution time, memory consumption) for use with '
-                        'TensorBoard. Default: ' + str(METADATA) + '.')
-    parser.add_argument('--logdir', type=str, default=None,
-                        help='Directory in which to store the logging '
-                        'information for TensorBoard. '
-                        'If the model already exists, it will restore '
-                        'the state and will continue training. '
-                        'Cannot use with --logdir_root and --restore_from.')
-    parser.add_argument('--logdir_root', type=str, default=None,
-                        help='Root directory to place the logging '
-                        'output and generated model. These are stored '
-                        'under the dated subdirectory of --logdir_root. '
-                        'Cannot use with --logdir.')
-    parser.add_argument('--restore_from', type=str, default=None,
-                        help='Directory in which to restore the model from. '
-                        'This creates the new model under the dated directory '
-                        'in --logdir_root. '
-                        'Cannot use with --logdir.')
-    parser.add_argument('--checkpoint_every', type=int,
-                        default=CHECKPOINT_EVERY,
-                        help='How many steps to save each checkpoint after.'
-                        'Default: ' + str(CHECKPOINT_EVERY) + '.')
-    parser.add_argument('--num_steps', type=int, default=NUM_STEPS,
-                        help='Number of training steps. Default: '
-                        + str(NUM_STEPS) + '.')
-    parser.add_argument('--learning_rate', type=float, default=LEARNING_RATE,
-                        help='Learning rate for training. Default: '
-                        + str(LEARNING_RATE) + '.')
-    parser.add_argument('--wavenet_params', type=str, default=WAVENET_PARAMS,
+    parser.add_argument('--train-steps',
+                      type=int,
+                        default=TRAIN_STEPS,
+                      help='Maximum number of training steps to perform.')
+    parser.add_argument('--eval-frequency',
+                      default=EVAL_FREQUENCY,
+                      help='Perform one evaluation per n steps')
+    parser.add_argument('--num-epochs',
+                      type=int,
+                      help='Maximum number of epochs on which to train')
+    parser.add_argument('--wavenet-params', type=str, default=WAVENET_PARAMS,
                         help='JSON file with the network parameters. Default: '
                         + WAVENET_PARAMS + '.')
+    parser.add_argument('--learning-rate', type=float, default=LEARNING_RATE,
+                        help='Learning rate for training. Default: '
+                        + str(LEARNING_RATE) + '.')
     parser.add_argument('--momentum', type=float,
                         default=MOMENTUM, help='Specify the momentum to be '
                         'used by sgd or rmsprop optimizer.'
                         'Default: ' + str(MOMENTUM) + '.')
+    parser.add_argument('--export-format',
+                      type=str,
+                      choices=[model.JSON, model.CSV, model.EXAMPLE],
+                      default=EXPORT_FORMAT,
+                      help="""\
+                      Desired input format for the exported saved_model
+                      binary.""")
+    parser.add_argument('--verbosity',
+                      choices=[
+                          'DEBUG',
+                          'ERROR',
+                          'FATAL',
+                          'INFO',
+                          'WARN'
+                      ],
+                      default='INFO',
+                      help='Set logging verbosity')
     parser.add_argument('--histograms', type=_str_to_bool, default=False,
                         help='Whether to store histogram summaries. '
                         'Default: False')
-    parser.add_argument('--max_checkpoints', type=int, default=MAX_TO_KEEP,
+    parser.add_argument('--max-checkpoints', type=int, default=MAX_TO_KEEP,
                         help='Maximum amount of checkpoints that will be '
                         'kept alive. Default: ' + str(MAX_TO_KEEP) + '.')
     return parser.parse_args()
 
 
-def save(saver, sess, logdir, step):
+def save(saver, sess, job_dir, step):
     model_name = 'model.ckpt'
-    checkpoint_path = os.path.join(logdir, model_name)
-    print('Storing checkpoint to {} ...'.format(logdir), end="")
+    checkpoint_path = os.path.join(job_dir, model_name)
+    print('Storing checkpoint to {} ...'.format(job_dir), end="")
     sys.stdout.flush()
 
-    if not os.path.exists(logdir):
-        os.makedirs(logdir)
+    if not os.path.exists(job_dir):
+        os.makedirs(job_dir)
 
     saver.save(sess, checkpoint_path, global_step=step)
     print(' Done.')
 
 
-def load(saver, sess, logdir):
-    print("Trying to restore saved checkpoints from {} ...".format(logdir),
+def load(saver, sess, job_dir):
+    print("Trying to restore saved checkpoints from {} ...".format(job_dir),
           end="")
 
-    ckpt = tf.train.get_checkpoint_state(logdir)
+    ckpt = tf.train.get_checkpoint_state(job_dir)
     if ckpt:
         print("  Checkpoint found: {}".format(ckpt.model_checkpoint_path))
         global_step = int(ckpt.model_checkpoint_path
@@ -135,203 +148,31 @@ def load(saver, sess, logdir):
         return None
 
 
-def get_default_logdir(logdir_root):
-    logdir = os.path.join(logdir_root, 'train', STARTED_DATESTRING)
-    return logdir
+def get_default_job_dir(job_dir_root):
+    job_dir = os.path.join(job_dir_root, 'train', STARTED_DATESTRING)
+    return job_dir
 
 
 def validate_directories(args):
     """Validate and arrange directory related arguments."""
 
-    # Validation
-    if args.logdir and args.logdir_root:
-        raise ValueError("--logdir and --logdir_root cannot be "
-                         "specified at the same time.")
-
-    if args.logdir and args.restore_from:
-        raise ValueError(
-            "--logdir and --restore_from cannot be specified at the same "
-            "time. This is to keep your previous model from unexpected "
-            "overwrites.\n"
-            "Use --logdir_root to specify the root of the directory which "
-            "will be automatically created with current date and time, or use "
-            "only --logdir to just continue the training from the last "
-            "checkpoint.")
-
     # Arrangement
-    logdir_root = args.logdir_root
-    if logdir_root is None:
-        logdir_root = LOGDIR_ROOT
+    job_dir_root = JOB_DIR_ROOT
 
-    logdir = args.logdir
-    if logdir is None:
-        logdir = get_default_logdir(logdir_root)
-        print('Using default logdir: {}'.format(logdir))
+    job_dir = args.job_dir
+    if job_dir is None:
+        job_dir = get_default_job_dir(job_dir_root)
+        print('Using default job_dir: {}'.format(job_dir))
 
-    restore_from = args.restore_from
-    if restore_from is None:
-        # args.logdir and args.restore_from are exclusive,
-        # so it is guaranteed the logdir here is newly created.
-        restore_from = logdir
+    restore_from = job_dir
 
     return {
-        'logdir': logdir,
-        'logdir_root': args.logdir_root,
+        'job_dir': job_dir,
+        'job_dir_root': job_dir_root,
         'restore_from': restore_from
     }
 
 
-def main():
-    args = get_arguments()
-
-    try:
-        directories = validate_directories(args)
-    except ValueError as e:
-        print("Some arguments are wrong:")
-        print(str(e))
-        return
-
-    logdir = directories['logdir']
-    restore_from = directories['restore_from']
-
-    # Even if we restored the model, we will treat it as new training
-    # if the trained model is written into an arbitrary location.
-    is_overwritten_training = logdir != restore_from
-
-    with open(args.wavenet_params, 'r') as f:
-        wavenet_params = json.load(f)
-
-    # Read TFRecords and create network.
-    tf.reset_default_graph()
-
-    data_train = get_tfrecord(name='train',
-                              sample_size=args.sample_size,
-                              batch_size=args.batch_size,
-                              seed=None,
-                              repeat=None,
-                              data_path=args.data_path)
-    data_test = get_tfrecord(name='test',
-                             sample_size=args.sample_size,
-                             batch_size=args.batch_size,
-                             seed=None,
-                             repeat=None,
-                             data_path=args.data_path)
-
-    train_itr = data_train.make_one_shot_iterator()
-    test_itr = data_test.make_one_shot_iterator()
-
-    _, train_batch, train_label = train_itr.get_next()
-    _, test_batch, test_label = test_itr.get_next()
-
-    train_batch = tf.reshape(train_batch, [-1, train_batch.shape[1], 1])
-    test_batch = tf.reshape(test_batch, [-1, test_batch.shape[1], 1])
-
-    # Create network.
-    net = WaveNetModel(sample_size=args.sample_size,
-                       batch_size=args.batch_size,
-                       dilations=wavenet_params["dilations"],
-                       filter_width=wavenet_params["filter_width"],
-                       residual_channels=wavenet_params["residual_channels"],
-                       dilation_channels=wavenet_params["dilation_channels"],
-                       skip_channels=wavenet_params["skip_channels"],
-                       histograms=args.histograms)
-
-    train_loss = net.loss(train_batch, train_label)
-    test_loss = net.loss(test_batch, test_label)
-
-    # Optimizer
-    # Temporarily set to momentum optimizer
-    optimizer = tf.train.MomentumOptimizer(learning_rate=args.learning_rate,
-                                           momentum=args.momentum)
-    trainable = tf.trainable_variables()
-    optim = optimizer.minimize(train_loss, var_list=trainable)
-
-    # Accuracy of test data
-    pred_test = net.predict_proba(test_batch, audio_only=True)
-    equals = tf.equal(tf.squeeze(test_label), tf.round(pred_test))
-    acc = tf.reduce_mean(tf.cast(equals, tf.float32))
-
-    # Set up logging for TensorBoard.
-    writer = tf.summary.FileWriter(logdir)
-    writer.add_graph(tf.get_default_graph())
-    run_metadata = tf.RunMetadata()
-    summaries = tf.summary.merge_all()
-
-    # Set up session
-    sess = tf.Session(config=tf.ConfigProto(log_device_placement=False))
-    init_global = tf.global_variables_initializer()
-    init_local = tf.local_variables_initializer()
-    sess.run([init_global, init_local])
-
-    # Saver for storing checkpoints of the model.
-    saver = tf.train.Saver(var_list=tf.trainable_variables(),
-                           max_to_keep=args.max_checkpoints)
-
-    try:
-        saved_global_step = load(saver, sess, restore_from)
-        if is_overwritten_training or saved_global_step is None:
-            # The first training step will be saved_global_step + 1,
-            # therefore we put -1 here for new or overwritten trainings.
-            saved_global_step = -1
-    except:
-        print("Something went wrong while restoring checkpoint. "
-              "We will terminate training to avoid accidentally overwriting "
-              "the previous model.")
-        raise
-
-    step = None
-    last_saved_step = saved_global_step
-    try:
-        for step in range(saved_global_step + 1, args.num_steps):
-            start_time = time.time()
-            if step == saved_global_step + 1:
-                run_options = tf.RunOptions(
-                    trace_level=tf.RunOptions.FULL_TRACE)
-            if args.store_metadata and step % 50 == 0:
-                # Slow run that stores extra information for debugging.
-                print('Storing metadata')
-                run_options = tf.RunOptions(
-                    trace_level=tf.RunOptions.FULL_TRACE)
-                summary_, train_loss_, test_loss_, acc_,  _ = sess.run(
-                    [summaries, train_loss, test_loss,
-                     acc, optim],
-                    options=run_options,
-                    run_metadata=run_metadata)
-                writer.add_summary(summary_, step)
-                writer.add_run_metadata(run_metadata,
-                                        'step_{:04d}'.format(step))
-                tl = timeline.Timeline(run_metadata.step_stats)
-                timeline_path = os.path.join(logdir, 'timeline.trace')
-                with open(timeline_path, 'w') as f:
-                    f.write(tl.generate_chrome_trace_format(show_memory=True))
-            else:
-                summary_, train_loss_, test_loss_, acc_,  _ = sess.run(
-                    [summaries, train_loss, test_loss,
-                     acc, optim],
-                    options=run_options,
-                    run_metadata=run_metadata)
-                writer.add_summary(summary_, step)
-
-            duration = time.time() - start_time
-            print("step {:d}:  trainloss = {:.3f}, "
-                  "testloss = {:.3f}, acc = {:.3f}, ({:.3f} sec/step)"
-                  .format(step, train_loss_, test_loss_, acc_, duration))
-
-            if step % args.checkpoint_every == 0:
-                save(saver, sess, logdir, step)
-                last_saved_step = step
-
-    except KeyboardInterrupt:
-        # Introduce a line break after ^C is displayed so save message
-        # is on its own line.
-        print()
-    finally:
-        if step and step > last_saved_step:
-            save(saver, sess, logdir, step)
-        elif not step:
-            print("No training performed during session.")
-        else:
-            pass
 
 def run(target,
         cluster_spec,
@@ -339,18 +180,19 @@ def run(target,
         train_steps,
         # eval_steps,
         job_dir,
+        restore_from,
         train_files,
         eval_files,
         batch_size,  # for both train and eval
         # eval_batch_size,
         num_epochs,
         eval_frequency,
-        export_format,
+        export_format=model.EXAMPLE,
         num_samples=16000,
         learning_rate=1e-3,
-        epsilon=1e-3,
+        # epsilon=1e-3, used for Adam optimizer
         momentum=0.9,
-        wavenet_params_path=None,
+        wavenet_params=None,
         filter_width=2,
         sample_rate=16000,
         dilations=[2**x for x in range(10)]*2,
@@ -361,13 +203,15 @@ def run(target,
         use_biases=True,
         scalar_input=False,
         initial_filter_width=32,
-        histograms=True):
+        histograms=True,
+        max_checkpoints=5,
+        **kwargs):
     """
     run
     """
 
-    if wavenet_params_path:
-        with open(wavenet_params_path, 'r') as f:
+    if wavenet_params:
+        with open(wavenet_params, 'r') as f:
             wavenet_params = json.load(f)
         for key, val in wavenet_params.items():
             exec("{} = {}".format(key, val))
@@ -387,16 +231,17 @@ def run(target,
                              histograms=histograms)
 
 
+    train_batch_size, test_batch_size = batch_size, batch_size
     # Features and label tensors as read using filename queue
-    train_batch, train_labels = model.input_fn(
+    _, train_batch, train_labels = model.input_fn(
       train_files,
       num_epochs=num_epochs,
       shuffle=True,
       batch_size=train_batch_size
     )
 
-    test_batch, test_labels = model.input_fn(
-      test_files,
+    _, test_batch, test_labels = model.input_fn(
+      eval_files,
       num_epochs=num_epochs,
       shuffle=True,
       batch_size=test_batch_size
@@ -407,18 +252,18 @@ def run(target,
     train_op, global_step_tensor = model.model_fn(
       model.TRAIN,
       net,
-      features.copy(),
-      labels,
+      train_batch,
+      train_labels,
       learning_rate,
-      epsilon,
+      # epsilon,
       momentum,
     )
 
-    eval_dict, _ = model.model_fn(
+    eval_dict = model.model_fn(
       model.EVAL,
       net,
-      features.copy(),
-      labels,
+      test_batch,
+      test_labels,
     )
 
     crossent_loss = eval_dict['crossentropy']
@@ -438,36 +283,189 @@ def run(target,
     init2 = tf.local_variables_initializer()
     sess.run([init, init2])
 
+    # Saver for storing checkpoints of the model.
+    saver = tf.train.Saver(var_list=tf.trainable_variables(),
+                           max_to_keep=max_checkpoints)
+
+    try:
+        # Restore variables into session including global_step_tensor
+        load(saver, sess, restore_from)
+    except:
+        print("Something went wrong while restoring checkpoint. "
+              "We will terminate training to avoid accidentally overwriting "
+              "the previous model.")
+        raise
+
 
     # Training process
     global_step = global_step_tensor.eval(session=sess)
+    # last_saved_step = global_step
     while global_step < train_steps:
+        print("global_step is", global_step)
+        start_time = time.time()
         do_eval = (global_step % eval_frequency == 0)
 
-        global_step, _ = sess.run([global_step_tensor, train_op])
+        global_step, summ_,  _ = sess.run([global_step_tensor,
+                                           summaries,
+                                           train_op])
+
+        writer.add_summary(summ_, global_step)
 
         # Evaluate+log every X steps (at end of step)
+        # Also store checkpoint (for now)
         if do_eval:
             tf.logging.info('Starting Evaluation for Step: {}'\
                             .format(global_step))
-            summ_, crossent, acc, _, stracc\
-                    = sess.run([summaries,
-                                crossent_loss,
-                                acc_val,
-                                acc_update_op,
-                                stream_acc])
-            writer.add_summary(summ_, global_step)
-            tf.logging.info("Cross-entropy loss: {}"\
+            crossent, _, stracc = sess.run([crossent_loss,
+                                                 acc_update_op,
+                                                 stream_acc])
+            acc = sess.run([acc_val])
+            tf.logging.info("Cross-entropy loss: {:3f}"\
                             .format(crossent))
-            tf.logging.info("Accuracy: {}".format(acc))
-            tf.logging.info("Streaming Acc: {}"\
+            tf.logging.info("          Accuracy: {:3f}".format(acc[0]))
+            tf.logging.info("Streaming Accuracy: {:3f}"\
                             .format(stracc))
+            # Save model checkpoint
+            save(saver, sess, job_dir, global_step)
+
+        duration = time.time() - start_time
+        print("step {:>3} took {:.3f} sec".format(global_step, duration))
+
+    # After steps are done
+    latest_checkpoint = tf.train.latest_checkpoint(job_dir)
+
+    if is_chief:
+        build_and_run_exports(latest_checkpoint,
+                              job_dir,
+                              model.SERVING_INPUT_FUNCTIONS[export_format],
+                              net)  # needed to preserve variables
+    return
 
 
-    # TODO:
-    # Implement saver, loader, checkpoints, dispatch, TF_CONFIG
-    # LATER: modify for distributive computing
-# TODO ^
+
+# only export format that works is EXAMPLE
+def build_and_run_exports(latest, job_dir, serving_input_fn, wavenetmodel):
+  """Given the latest checkpoint file export the saved model.
+  Args:
+    latest (string): Latest checkpoint file
+    job_dir (string): Location of checkpoints and model files
+      export path.
+    serving_input_fn (function)
+    wavenetmodel (WaveNetModel): WaveNetModel where variables are stored
+  """
+
+  prediction_graph = tf.Graph()
+  exporter = tf.saved_model.builder.SavedModelBuilder(
+      os.path.join(job_dir, 'export'))
+  with prediction_graph.as_default():
+    features, inputs_dict = serving_input_fn()
+    prediction_dict = model.model_fn(
+        model.PREDICT,
+        wavenetmodel,
+        features.copy(),
+        None,  # labels
+        # learning parameters not used in prediction mode 
+    )
+    saver = tf.train.Saver()
+
+    inputs_info = {
+        name: tf.saved_model.utils.build_tensor_info(tensor)
+        for name, tensor in six.iteritems(inputs_dict)
+    }
+    output_info = {
+        name: tf.saved_model.utils.build_tensor_info(tensor)
+        for name, tensor in six.iteritems(prediction_dict)
+    }
+    signature_def = tf.saved_model.signature_def_utils.build_signature_def(
+        inputs=inputs_info,
+        outputs=output_info,
+        method_name=sig_constants.PREDICT_METHOD_NAME
+    )
+
+  with tf.Session(graph=prediction_graph) as session:
+    session.run([tf.local_variables_initializer(),
+                 tf.global_variables_initializer()])
+    saver.restore(session, latest)
+    exporter.add_meta_graph_and_variables(
+        session,
+        tags=[tf.saved_model.tag_constants.SERVING],
+        signature_def_map={
+            sig_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY: signature_def
+        },
+        # legacy_init_op=main_op()
+    )
+
+  exporter.save()
+
+
+def dispatch(*args, **kwargs):
+  """Parse TF_CONFIG to cluster_spec and call run() method
+  TF_CONFIG environment variable is available when running using
+  gcloud either locally or on cloud. It has all the information required
+  to create a ClusterSpec which is important for running distributed code.
+  """
+
+  tf_config = os.environ.get('TF_CONFIG')
+  # If TF_CONFIG is not available run local
+  if not tf_config:
+    return run(target='', cluster_spec=None, is_chief=True, *args, **kwargs)
+
+  tf_config_json = json.loads(tf_config)
+
+  cluster = tf_config_json.get('cluster')
+  job_name = tf_config_json.get('task', {}).get('type')
+  task_index = tf_config_json.get('task', {}).get('index')
+
+  # If cluster information is empty run local
+  if job_name is None or task_index is None:
+    return run(target='', cluster_spec=None, is_chief=True, *args, **kwargs)
+
+  cluster_spec = tf.train.ClusterSpec(cluster)
+  server = tf.train.Server(cluster_spec,
+                           job_name=job_name,
+                           task_index=task_index)
+
+  # Wait for incoming connections forever
+  # Worker ships the graph to the ps server
+  # The ps server manages the parameters of the model.
+  #
+  # See a detailed video on distributed TensorFlow
+  # https://www.youtube.com/watch?v=la_M6bCV91M
+  if job_name == 'ps':
+    server.join()
+    return
+  elif job_name in ['master', 'worker']:
+    return run(server.target, cluster_spec, is_chief=(job_name == 'master'),
+               *args, **kwargs)
+
+# TODO:
+# Implement saver, loader, checkpoints, exporting
+# ===> dispatch, TF_CONFIG
+# LATER: modify for distributive computing
+
+def main():
+    args = get_arguments()
+
+    # Set python level verbosity
+    tf.logging.set_verbosity(args.verbosity)
+
+    try:
+        directories = validate_directories(args)
+    except ValueError as e:
+        print("Some arguments are wrong:")
+        print(str(e))
+        return
+
+    args_dict = vars(args)
+    args_dict['job_dir'] = directories['job_dir']
+    args_dict['restore_from'] = directories['restore_from']
+
+    # Even if we restored the model, we will treat it as new training
+    # if the trained model is written into an arbitrary location.
+    # is_overwritten_training = job_dir != restore_from
+
+    dispatch(**args_dict)
+
 
 if __name__ == '__main__':
     main()
