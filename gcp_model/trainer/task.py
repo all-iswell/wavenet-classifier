@@ -30,7 +30,7 @@ BATCH_SIZE = 40
 TRAIN_STEPS = int(1e5)
 EVAL_FREQUENCY = 50
 # NUM_EPOCHS = 1  # not used
-WAVENET_PARAMS = './wavenet_params.json'
+# WAVENET_PARAMS = './wavenet_params.json'
 LEARNING_RATE = 1e-3
 MOMENTUM = 0.9
 # EPSILON = 0.001
@@ -79,9 +79,6 @@ def get_arguments():
     parser.add_argument('--num-epochs',
                       type=int,
                       help='Maximum number of epochs on which to train')
-    parser.add_argument('--wavenet-params', type=str, default=WAVENET_PARAMS,
-                        help='JSON file with the network parameters. Default: '
-                        + WAVENET_PARAMS + '.')
     parser.add_argument('--learning-rate', type=float, default=LEARNING_RATE,
                         help='Learning rate for training. Default: '
                         + str(LEARNING_RATE) + '.')
@@ -118,33 +115,33 @@ def get_arguments():
 def save(saver, sess, job_dir, step):
     model_name = 'model.ckpt'
     checkpoint_path = os.path.join(job_dir, model_name)
-    print('Storing checkpoint to {} ...'.format(job_dir), end="")
+    tf.logging.info('Storing checkpoint to {} ...'.format(job_dir))
     sys.stdout.flush()
 
     if not os.path.exists(job_dir):
         os.makedirs(job_dir)
 
     saver.save(sess, checkpoint_path, global_step=step)
-    print(' Done.')
+    tf.logging.info(' Done.')
 
 
 def load(saver, sess, job_dir):
-    print("Trying to restore saved checkpoints from {} ...".format(job_dir),
-          end="")
+    tf.logging.info("Trying to restore saved checkpoints from {} ..."\
+                    .format(job_dir))
 
     ckpt = tf.train.get_checkpoint_state(job_dir)
     if ckpt:
-        print("  Checkpoint found: {}".format(ckpt.model_checkpoint_path))
+        tf.logging.info("  Checkpoint found: {}".format(ckpt.model_checkpoint_path))
         global_step = int(ckpt.model_checkpoint_path
                           .split('/')[-1]
                           .split('-')[-1])
-        print("  Global step was: {}".format(global_step))
-        print("  Restoring...", end="")
+        tf.logging.info("  Global step was: {}".format(global_step))
+        tf.logging.info("  Restoring...")
         saver.restore(sess, ckpt.model_checkpoint_path)
-        print(" Done.")
+        tf.logging.info(" Done.")
         return global_step
     else:
-        print(" No checkpoint found.")
+        tf.logging.info(" No checkpoint found.")
         return None
 
 
@@ -162,7 +159,7 @@ def validate_directories(args):
     job_dir = args.job_dir
     if job_dir is None:
         job_dir = get_default_job_dir(job_dir_root)
-        print('Using default job_dir: {}'.format(job_dir))
+        tf.logging.info('Using default job_dir: {}'.format(job_dir))
 
     restore_from = job_dir
 
@@ -192,7 +189,7 @@ def run(target,
         learning_rate=1e-3,
         # epsilon=1e-3, used for Adam optimizer
         momentum=0.9,
-        wavenet_params=None,
+        # wavenet_params=None,
         filter_width=2,
         sample_rate=16000,
         dilations=[2**x for x in range(10)]*2,
@@ -209,14 +206,6 @@ def run(target,
     """
     run
     """
-
-    if wavenet_params:
-        with open(wavenet_params, 'r') as f:
-            wavenet_params = json.load(f)
-        for key, val in wavenet_params.items():
-            exec("{} = {}".format(key, val))
-
-
     net = model.WaveNetModel(num_samples=num_samples,
                              batch_size=batch_size,
                              dilations=dilations,
@@ -242,7 +231,7 @@ def run(target,
 
     _, test_batch, test_labels = model.input_fn(
       eval_files,
-      num_epochs=num_epochs,
+      num_epochs=None,  # test data has fewer records
       shuffle=True,
       batch_size=test_batch_size
     )
@@ -291,7 +280,7 @@ def run(target,
         # Restore variables into session including global_step_tensor
         load(saver, sess, restore_from)
     except:
-        print("Something went wrong while restoring checkpoint. "
+        tf.logging.info("Something went wrong while restoring checkpoint. "
               "We will terminate training to avoid accidentally overwriting "
               "the previous model.")
         raise
@@ -301,35 +290,39 @@ def run(target,
     global_step = global_step_tensor.eval(session=sess)
     # last_saved_step = global_step
     while global_step < train_steps:
-        print("global_step is", global_step)
-        start_time = time.time()
-        do_eval = (global_step % eval_frequency == 0)
+        try:
+            tf.logging.info("global_step is {}".format(global_step))
+            start_time = time.time()
+            do_eval = (global_step % eval_frequency == 0)
 
-        global_step, summ_,  _ = sess.run([global_step_tensor,
-                                           summaries,
-                                           train_op])
+            global_step, summ_,  _ = sess.run([global_step_tensor,
+                                               summaries,
+                                               train_op])
 
-        writer.add_summary(summ_, global_step)
+            writer.add_summary(summ_, global_step)
 
-        # Evaluate+log every X steps (at end of step)
-        # Also store checkpoint (for now)
-        if do_eval:
-            tf.logging.info('Starting Evaluation for Step: {}'\
-                            .format(global_step))
-            crossent, _, stracc = sess.run([crossent_loss,
-                                                 acc_update_op,
-                                                 stream_acc])
-            acc = sess.run([acc_val])
-            tf.logging.info("Cross-entropy loss: {:3f}"\
-                            .format(crossent))
-            tf.logging.info("          Accuracy: {:3f}".format(acc[0]))
-            tf.logging.info("Streaming Accuracy: {:3f}"\
-                            .format(stracc))
-            # Save model checkpoint
-            save(saver, sess, job_dir, global_step)
+            # Evaluate+log every X steps (at end of step)
+            # Also store checkpoint (for now)
+            if do_eval:
+                tf.logging.info('Starting Evaluation for Step: {}'\
+                                .format(global_step))
+                crossent, _, stracc = sess.run([crossent_loss,
+                                                     acc_update_op,
+                                                     stream_acc])
+                acc = sess.run([acc_val])
+                tf.logging.info("Cross-entropy loss: {:3f}"\
+                                .format(crossent))
+                tf.logging.info("          Accuracy: {:3f}".format(acc[0]))
+                tf.logging.info("Streaming Accuracy: {:3f}"\
+                                .format(stracc))
+                # Save model checkpoint
+                save(saver, sess, job_dir, global_step)
 
-        duration = time.time() - start_time
-        print("step {:>3} took {:.3f} sec".format(global_step, duration))
+            duration = time.time() - start_time
+            tf.logging.info("step {:>3} took {:.3f} sec".format(global_step, duration))
+        except:
+            tf.logging.info("Reached end of allotted data")
+            break
 
     # After steps are done
     latest_checkpoint = tf.train.latest_checkpoint(job_dir)
@@ -467,8 +460,8 @@ def main():
     try:
         directories = validate_directories(args)
     except ValueError as e:
-        print("Some arguments are wrong:")
-        print(str(e))
+        tf.logging.info("Some arguments are wrong:")
+        tf.logging.info(str(e))
         return
 
     args_dict = vars(args)

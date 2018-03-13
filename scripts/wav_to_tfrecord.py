@@ -9,7 +9,7 @@ import re
 import pydub as pdb
 
 
-DATA_PATH0 = '../_data/tfrecords/sample_{}_16000_{}.tfrecord'
+DATA_PATH0 = '../_data/tfrecords/{}_16000_{}.tfrecord'
 NUM_SAMPLES = 16000
 
 
@@ -86,13 +86,17 @@ def main(*args):
     df_s = df_mu.sample(frac=1).reset_index()
     del df_s[0]
 
-    df_train = df_s.iloc[:4000, :].copy()
-    df_test = df_s.iloc[4000:4240, :].copy()
+    # 2480 / 880 / 880 split
+    df_train = df_s.iloc[:2480, :].copy()
+    df_eval = df_s.iloc[2480:3360, :].copy()
+    df_test = df_s.iloc[3360:4240, :].copy()
 
     df_train_val = df_train.values.astype(np.int64)
+    df_eval_val = df_eval.values.astype(np.int64)
     df_test_val = df_test.values.astype(np.int64)
 
     write_tfrecord(df_train_val, name='train')
+    write_tfrecord(df_eval_val, name='eval')
     write_tfrecord(df_test_val, name='test')
 
     return

@@ -1,7 +1,7 @@
 #!/bin/bash
-TRAIN_DATA=$(pwd)/data/sample_onoff_16000_train.tfrecord
-EVAL_DATA=$(pwd)/data/sample_onoff_16000_test.tfrecord
-TRAIN_STEPS=1
+TRAIN_DATA=$(pwd)/data/onoff_16000_train.tfrecord
+EVAL_DATA=$(pwd)/data/onoff_16000_eval.tfrecord
+TRAIN_STEPS=2
 gcloud ml-engine local train\
 	--module-name trainer.task\
 	--package-path trainer\
