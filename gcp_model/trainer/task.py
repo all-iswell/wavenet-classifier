@@ -149,7 +149,7 @@ def load(saver, sess, job_dir):
 
 
 def get_default_job_dir(job_dir_root):
-    job_dir = os.path.join(job_dir_root, 'train', STARTED_DATESTRING)
+    job_dir = os.path.join(job_dir_root, STARTED_DATESTRING)
     return job_dir
 
 
@@ -344,58 +344,73 @@ def run(target,
 
 
 # only export format that works is EXAMPLE
-def build_and_run_exports(latest, job_dir, serving_input_fn, wavenetmodel):
-  """Given the latest checkpoint file export the saved model.
-  Args:
-    latest (string): Latest checkpoint file
-    job_dir (string): Location of checkpoints and model files
-      export path.
-    serving_input_fn (function)
-    wavenetmodel (WaveNetModel): WaveNetModel where variables are stored
-  """
+def build_and_run_exports(latest, job_dir, serving_input_fn, net):
+    """Given the latest checkpoint file export the saved model.
+    Args:
+        latest (string): Latest checkpoint file
+        job_dir (string): Location of checkpoints and model files
+          export path.
+        serving_input_fn (function)
+        wavenetmodel (WaveNetModel): WaveNetModel where variables are stored
+    """
+    prediction_graph = tf.Graph()
+    exporter = tf.saved_model.builder.SavedModelBuilder(
+        os.path.join(job_dir, 'export'))
+    with prediction_graph.as_default():
+        # New network with same parameters as trained model
+        exp_net = model.WaveNetModel(
+            num_samples=net.num_samples,
+            batch_size=None,#net.batch_size,
+            dilations=net.dilations,
+            filter_width=net.filter_width,
+            residual_channels=net.residual_channels,
+            dilation_channels=net.dilation_channels,
+            skip_channels=net.skip_channels,
+            quantization_channels=net.quantization_channels,
+            use_biases=net.use_biases,
+            scalar_input=net.scalar_input,
+            initial_filter_width=net.initial_filter_width,
+            histograms=net.histograms)
 
-  prediction_graph = tf.Graph()
-  exporter = tf.saved_model.builder.SavedModelBuilder(
-      os.path.join(job_dir, 'export'))
-  with prediction_graph.as_default():
-    features, inputs_dict = serving_input_fn()
-    prediction_dict = model.model_fn(
-        model.PREDICT,
-        wavenetmodel,
-        features.copy(),
-        None,  # labels
-        # learning parameters not used in prediction mode 
-    )
-    saver = tf.train.Saver()
+        features, inputs_dict = serving_input_fn()
+        prediction_dict = model.model_fn(
+            model.PREDICT,
+            exp_net,
+            features,
+            None,  # labels
+            # learning parameters not used in prediction mode 
+        )
+        saver = tf.train.Saver()
 
-    inputs_info = {
-        name: tf.saved_model.utils.build_tensor_info(tensor)
-        for name, tensor in six.iteritems(inputs_dict)
-    }
-    output_info = {
-        name: tf.saved_model.utils.build_tensor_info(tensor)
-        for name, tensor in six.iteritems(prediction_dict)
-    }
-    signature_def = tf.saved_model.signature_def_utils.build_signature_def(
-        inputs=inputs_info,
-        outputs=output_info,
-        method_name=sig_constants.PREDICT_METHOD_NAME
-    )
+        inputs_info = {
+            name: tf.saved_model.utils.build_tensor_info(tensor)
+            for name, tensor in six.iteritems(inputs_dict)
+        }
+        output_info = {
+            name: tf.saved_model.utils.build_tensor_info(tensor)
+            for name, tensor in six.iteritems(prediction_dict)
+        }
+        signature_def = tf.saved_model\
+                .signature_def_utils.build_signature_def(
+            inputs=inputs_info,
+            outputs=output_info,
+            method_name=sig_constants.PREDICT_METHOD_NAME
+        )
 
-  with tf.Session(graph=prediction_graph) as session:
-    session.run([tf.local_variables_initializer(),
-                 tf.global_variables_initializer()])
-    saver.restore(session, latest)
-    exporter.add_meta_graph_and_variables(
-        session,
-        tags=[tf.saved_model.tag_constants.SERVING],
-        signature_def_map={
-            sig_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY: signature_def
-        },
-        # legacy_init_op=main_op()
-    )
+    with tf.Session(graph=prediction_graph) as session:
+        session.run([tf.local_variables_initializer(),
+                     tf.global_variables_initializer()])
+        saver.restore(session, latest)
+        exporter.add_meta_graph_and_variables(
+            session,
+            tags=[tf.saved_model.tag_constants.SERVING],
+            signature_def_map={
+                sig_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY: signature_def
+            },
+            # legacy_init_op=main_op()
+        )
 
-  exporter.save()
+    exporter.save()
 
 
 def dispatch(*args, **kwargs):

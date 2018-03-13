@@ -411,7 +411,9 @@ class WaveNetModel(object):
                 input_batch,
                 depth=self.quantization_channels,
                 dtype=tf.float32)
-            shape = [batch_size, -1, self.quantization_channels]
+            shape = [-1,
+                     self.num_samples,
+                     self.quantization_channels]
             encoded = tf.reshape(encoded, shape)
         return encoded
 
@@ -457,16 +459,13 @@ class WaveNetModel(object):
             raw_output = self._create_network(network_input)
 
             if get_logits:
-                outputs['logits'] = tf.reshape(raw_output,
-                                               [self.batch_size])
+                outputs['logits'] = tf.squeeze(raw_output)
             if get_loss:
                 with tf.name_scope('loss'):
                     ## format the target values
-                    target_output = tf.reshape(input_label,
-                                               [self.batch_size])
+                    target_output = tf.squeeze(input_label)
                     ## logits
-                    prediction = tf.reshape(raw_output,
-                                            [self.batch_size])
+                    prediction = tf.squeeze(raw_output)
 
                     loss = tf.nn.sigmoid_cross_entropy_with_logits(
                         logits=prediction,
@@ -562,13 +561,14 @@ def model_fn(mode,
         }
 
 # def csv_serving_input_fn(default_batch_size=None):
-def example_serving_input_fn():
-    filenames = tf.placeholder(tf.string,
-                               shape=[None])
-    dataset = tf.data.TFRecordDataset(filenames).map(parser)
-    itr = dataset.make_one_shot_iterator()
+def example_serving_input_fn(default_batch_size=None):
+    example_bytestring = tf.placeholder(
+        shape=[default_batch_size],
+        dtype=tf.string,
+    )
+    features = tf.parse_example(example_bytestring, FEATURES)
 
-    return itr.get_next(), FEATURES
+    return features['samples'], {'example': example_bytestring}
 
 # def json_serving_input_fn(default_batch_size=None):
 SERVING_INPUT_FUNCTIONS = {
