@@ -517,7 +517,7 @@ def model_fn(mode,
              input_batch,
              labels,
              learning_rate=1e-3,
-             epsilon=1e-3,
+             epsilon=1e-4,
              momentum=0.9):
     """ Model fn"""
 
@@ -539,8 +539,10 @@ def model_fn(mode,
 
     if mode == TRAIN:
         tf.summary.scalar('loss', outs['loss'])
-        optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate,
-                                               momentum=momentum)
+        optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate,
+                                           epsilon=epsilon)
+        #optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate,
+        #                                        momentum=momentum)
         trainable = tf.trainable_variables()
         train_op = optimizer.minimize(outs['loss'],
                                       var_list=trainable,
