@@ -1,12 +1,12 @@
 # Binary Audio Classifier adapted from WaveNet
 
-## Goal:
+## Goal
 Build a classifier to distinguish sounds, such as laughing and crying.
 
-## Motivation:
+## Motivation
 Audio data analysis has typically relied on preprocessed features such as MFCCs (Mel-frequency cepstral coefficients) for meaningful information retrieval. However, with the advent of the WaveNet generative model for raw audio, I speculated that it may be possible to construct an end-to-end audio classifier that uses only raw audio and dilated causal convolution structures to directly extract enough information for meaningful classification. This project is an attempted implementation of such a classifier.
 
-## Status:
+## Status
 Work in progress.
 * Implemented:
   * Data preprocessing pipeline (wav -> TFRecord)
@@ -16,7 +16,7 @@ Work in progress.
     * Testing with TensorFlow single-word speech data (`onoff_ver` branch)
   * Packaging for deployment on Google Cloud Platform (`onoff_ver` branch)
 
-## TODO:
+## TODO
 * Process viable datasets for classification
   * Laughing-crying
     * Manual edits for consistent sample data
