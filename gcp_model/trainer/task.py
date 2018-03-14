@@ -33,7 +33,7 @@ EVAL_FREQUENCY = 50
 # WAVENET_PARAMS = './wavenet_params.json'
 LEARNING_RATE = 1e-3
 MOMENTUM = 0.9
-# EPSILON = 0.001
+EPSILON = 1e-4
 EXPORT_FORMAT = model.EXAMPLE
 STARTED_DATESTRING = "{0:%Y-%m-%dT%H-%M-%S}".format(datetime.now())
 MAX_TO_KEEP = 5
@@ -74,6 +74,7 @@ def get_arguments():
                         default=TRAIN_STEPS,
                       help='Maximum number of training steps to perform.')
     parser.add_argument('--eval-frequency',
+                        type=int,
                       default=EVAL_FREQUENCY,
                       help='Perform one evaluation per n steps')
     parser.add_argument('--num-epochs',
@@ -291,7 +292,6 @@ def run(target,
     # last_saved_step = global_step
     while global_step < train_steps:
         try:
-            tf.logging.info("global_step is {}".format(global_step))
             start_time = time.time()
             do_eval = (global_step % eval_frequency == 0)
 
@@ -299,6 +299,7 @@ def run(target,
                                                summaries,
                                                train_op])
 
+            tf.logging.info("global_step is {}".format(global_step))
             writer.add_summary(summ_, global_step)
 
             # Evaluate+log every X steps (at end of step)
@@ -320,8 +321,9 @@ def run(target,
 
             duration = time.time() - start_time
             tf.logging.info("step {:>3} took {:.3f} sec".format(global_step, duration))
-        except:
-            tf.logging.info("Reached end of allotted data")
+        except Exception as e:
+            tf.logging.info(str(e))
+            tf.logging.info("Or reached end of allotted data")
             break
 
     # After steps are done
