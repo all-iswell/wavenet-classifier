@@ -16,7 +16,7 @@ import time
 
 import six
 import tensorflow as tf
-from tensorflow.python.client import timeline
+# from tensorflow.python.client import timeline
 from tensorflow.python.saved_model import signature_constants as sig_constants
 
 import trainer.model as model
@@ -24,7 +24,6 @@ import trainer.model as model
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
-JOB_DIR_ROOT = './job_dir'
 NUM_SAMPLES = 16000
 BATCH_SIZE = 40
 TRAIN_STEPS = int(1e5)
@@ -64,6 +63,9 @@ def get_arguments():
                       GCS or local dir for checkpoints, exports, and
                       summaries. Use an existing directory to load a
                       trained model, or a new directory to retrain""")
+    parser.add_argument('--restore-from', type=str, default=None,
+                        help='Directory in which to restore the model from. '
+                        'Subsequent training is logged in job-dir.')
     parser.add_argument('--num-samples', type=int, default=NUM_SAMPLES,
                         help='Number of samples in each data row.'
                         ' Default: ' + str(NUM_SAMPLES) + '.')
@@ -81,7 +83,7 @@ def get_arguments():
     parser.add_argument('--num-epochs',
                       type=int,
                       help='Maximum number of epochs on which to train')
-    parser.add_argument('--l2_weight', type=float,
+    parser.add_argument('--l2-weight', type=float,
                         default=L2_WEIGHT,
                         help='Coefficient in the L2 regularization. '
                         'Default: False')
@@ -132,12 +134,13 @@ def save(saver, sess, job_dir, step):
 
 
 def load(saver, sess, job_dir):
-    tf.logging.info("Trying to restore saved checkpoints from {} ..."\
+    tf.logging.info("Trying to restore saved checkpoints from {} ..."
                     .format(job_dir))
 
     ckpt = tf.train.get_checkpoint_state(job_dir)
     if ckpt:
-        tf.logging.info("  Checkpoint found: {}".format(ckpt.model_checkpoint_path))
+        tf.logging.info("  Checkpoint found: {}"
+                        .format(ckpt.model_checkpoint_path))
         global_step = int(ckpt.model_checkpoint_path
                           .split('/')[-1]
                           .split('-')[-1])
@@ -151,30 +154,24 @@ def load(saver, sess, job_dir):
         return None
 
 
-def get_default_job_dir(job_dir_root):
-    job_dir = os.path.join(job_dir_root, STARTED_DATESTRING)
-    return job_dir
-
-
 def validate_directories(args):
     """Validate and arrange directory related arguments."""
 
-    # Arrangement
-    job_dir_root = JOB_DIR_ROOT
-
     job_dir = args.job_dir
-    if job_dir is None:
-        job_dir = get_default_job_dir(job_dir_root)
-        tf.logging.info('Using default job_dir: {}'.format(job_dir))
+    restore_from = args.restore_from
 
-    restore_from = job_dir
+    if job_dir is None:
+        raise Exception("Must specify job_dir.")
+    if restore_from is None:
+        restore_from = job_dir
+    else:
+        tf.logging.info("Will try to restore from {}."
+                        .format(restore_from))
 
     return {
         'job_dir': job_dir,
-        'job_dir_root': job_dir_root,
         'restore_from': restore_from
     }
-
 
 
 def run(target,
@@ -225,7 +222,6 @@ def run(target,
                              initial_filter_width=initial_filter_width,
                              histograms=histograms)
 
-
     train_batch_size, test_batch_size = batch_size, batch_size
     # Features and label tensors as read using filename queue
     _, train_batch, train_labels = model.input_fn(
@@ -241,7 +237,6 @@ def run(target,
       shuffle=True,
       batch_size=test_batch_size
     )
-
 
     # Returns the training graph and global step tensor
     train_op, global_step_tensor = model.model_fn(
@@ -265,10 +260,9 @@ def run(target,
     acc_val, acc_update_op = eval_dict['accuracy']
     stream_acc = eval_dict['streaming_accuracy']
 
-
     writer = tf.summary.FileWriter(
-        os.path.join(job_dir, 'eval_{}'\
-                .format(datetime.now().strftime("%y%m%d_%H%M%S"))))
+        os.path.join(job_dir, 'eval_{}'
+                     .format(datetime.now().strftime("%y%m%d_%H%M%S"))))
     writer.add_graph(tf.get_default_graph())
     run_metadata = tf.RunMetadata()
     summaries = tf.summary.merge_all()
@@ -325,7 +319,8 @@ def run(target,
                 save(saver, sess, job_dir, global_step)
 
             duration = time.time() - start_time
-            tf.logging.info("step {:>3} took {:.3f} sec".format(global_step, duration))
+            tf.logging.info("step {:>3} took {:.3f} sec"\
+                            .format(global_step, duration))
         except Exception as e:
             tf.logging.info(str(e))
             tf.logging.info("Or reached end of allotted data")
@@ -458,6 +453,7 @@ def dispatch(*args, **kwargs):
 # ===> dispatch, TF_CONFIG
 # LATER: modify for distributive computing
 
+
 def main():
     args = get_arguments()
 
@@ -474,10 +470,6 @@ def main():
     args_dict = vars(args)
     args_dict['job_dir'] = directories['job_dir']
     args_dict['restore_from'] = directories['restore_from']
-
-    # Even if we restored the model, we will treat it as new training
-    # if the trained model is written into an arbitrary location.
-    # is_overwritten_training = job_dir != restore_from
 
     dispatch(**args_dict)
 
