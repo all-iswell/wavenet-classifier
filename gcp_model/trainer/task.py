@@ -31,6 +31,7 @@ TRAIN_STEPS = int(1e5)
 EVAL_FREQUENCY = 50
 # NUM_EPOCHS = 1  # not used
 # WAVENET_PARAMS = './wavenet_params.json'
+L2_WEIGHT = 0
 LEARNING_RATE = 1e-3
 MOMENTUM = 0.9
 EPSILON = 1e-4
@@ -80,6 +81,10 @@ def get_arguments():
     parser.add_argument('--num-epochs',
                       type=int,
                       help='Maximum number of epochs on which to train')
+    parser.add_argument('--l2_weight', type=float,
+                        default=L2_WEIGHT,
+                        help='Coefficient in the L2 regularization. '
+                        'Default: False')
     parser.add_argument('--learning-rate', type=float, default=LEARNING_RATE,
                         help='Learning rate for training. Default: '
                         + str(LEARNING_RATE) + '.')
@@ -104,9 +109,9 @@ def get_arguments():
                       ],
                       default='INFO',
                       help='Set logging verbosity')
-    parser.add_argument('--histograms', type=_str_to_bool, default=False,
+    parser.add_argument('--histograms', type=_str_to_bool, default=True,
                         help='Whether to store histogram summaries. '
-                        'Default: False')
+                        'Default: True')
     parser.add_argument('--max-checkpoints', type=int, default=MAX_TO_KEEP,
                         help='Maximum amount of checkpoints that will be '
                         'kept alive. Default: ' + str(MAX_TO_KEEP) + '.')

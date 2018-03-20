@@ -431,6 +431,7 @@ class WaveNetModel(object):
     def loss_or_logits(self,
              input_batch,
              input_label=None, get_loss=True, get_logits=False,
+             l2_weight=None,
              name='wavenet'):
         '''Creates a WaveNet network and
         returns crossentropy loss and/or logits.
@@ -474,7 +475,22 @@ class WaveNetModel(object):
 
                     # tf.summary.scalar('loss', reduced_loss)
 
-                    outputs['loss'] = reduced_loss
+                    if l2_weight is None:
+                        outputs['loss'] = reduced_loss
+                    else:
+                        # L2 regularization term
+                        # https://github.com/ibab/tensorflow-wavenet
+                        l2_loss = tf.add_n(
+                            [tf.nn.l2_loss(v)
+                             for v in tf.trainable_variables()
+                             if not('bias' in v.name)])
+
+                        # Add weighted regularization term to loss
+                        total_loss = (reduced_loss
+                                      + l2_weight*l2_loss)
+                        tf.summary.scalar('l2_loss', l2_loss)
+
+                        outputs['loss'] = total_loss
         return outputs
 
 
@@ -516,13 +532,15 @@ def model_fn(mode,
              net,  # WaveNetModel
              input_batch,
              labels,
+             l2_weight=None,
              learning_rate=1e-3,
              epsilon=1e-4,
              momentum=0.9):
     """ Model fn"""
 
     outs = net.loss_or_logits(input_batch, labels,
-                              get_loss=True, get_logits=True)
+                              get_loss=True, get_logits=True,
+                              l2_weight=l2_weight)
 
     if mode in (PREDICT, EVAL):
         probs = tf.nn.sigmoid(outs['logits'])
