@@ -63,7 +63,7 @@ class WaveNetModel(object):
                  use_biases=False,
                  scalar_input=False,
                  initial_filter_width=32,
-                 histograms=False):
+                 histograms=True):
         '''Initializes the WaveNet model.
 
         Args:
@@ -88,7 +88,7 @@ class WaveNetModel(object):
                 convolution applied to the scalar input. This is only relevant
                 if scalar_input=True.
             histograms: Whether to store histograms in the summary.
-                Default: False.
+                Default: True.
 
 
         '''
@@ -472,7 +472,7 @@ class WaveNetModel(object):
                         labels=target_output)
                     reduced_loss = tf.reduce_mean(loss)
 
-                    tf.summary.scalar('loss', reduced_loss)
+                    # tf.summary.scalar('loss', reduced_loss)
 
                     outputs['loss'] = reduced_loss
         return outputs
@@ -538,7 +538,7 @@ def model_fn(mode,
         }
 
     if mode == TRAIN:
-        tf.summary.scalar('loss', outs['loss'])
+        tf.summary.scalar('train_loss', outs['loss'])
         optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate,
                                            epsilon=epsilon)
         #optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate,
@@ -550,6 +550,7 @@ def model_fn(mode,
         return train_op, global_step
 
     if mode == EVAL:
+        tf.summary.scalar('eval_loss', outs['loss'])
         # Return accuracy and cross entropy
         accuracy = tf.metrics.accuracy(labels, pred)
 
