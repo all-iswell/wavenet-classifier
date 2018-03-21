@@ -316,7 +316,7 @@ def run(target,
                 tf.logging.info("Streaming Accuracy: {:3f}"\
                                 .format(stracc))
                 # Save model checkpoint
-                save(saver, sess, job_dir, global_step)
+                save(saver, sess, job_dir, global_step_tensor)
 
             duration = time.time() - start_time
             tf.logging.info("step {:>3} took {:.3f} sec"\
