@@ -7,7 +7,7 @@ TRAIN_DATA=gs://$BUCKET_NAME/data/onoff_16000_train.tfrecord
 EVAL_DATA=gs://$BUCKET_NAME/data/onoff_16000_eval.tfrecord
 NUM_EPOCHS=50
 EVAL_FREQUENCY=10
-L2_WEIGHT=0.1
+L2_WEIGHT=0.01
 echo $BUCKET_NAME
 
 gcloud ml-engine jobs submit training $JOB_NAME \
