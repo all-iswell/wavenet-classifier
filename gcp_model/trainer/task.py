@@ -189,8 +189,9 @@ def run(target,
         eval_frequency,
         export_format=model.EXAMPLE,
         num_samples=16000,
+        l2_weight=None,  # L2 regularization weight
         learning_rate=1e-3,
-        # epsilon=1e-3, used for Adam optimizer
+        epsilon=1e-4, # used for Adam optimizer
         momentum=0.9,
         # wavenet_params=None,
         filter_width=2,
@@ -240,20 +241,21 @@ def run(target,
 
     # Returns the training graph and global step tensor
     train_op, global_step_tensor = model.model_fn(
-      model.TRAIN,
-      net,
-      train_batch,
-      train_labels,
-      learning_rate,
-      # epsilon,
-      momentum,
+      mode=model.TRAIN,
+      net=net,
+      input_batch=train_batch,
+      labels=train_labels,
+      l2_weight=l2_weight,
+      learning_rate=learning_rate,
+      epsilon=epsilon,
+      momentum=momentum,
     )
 
     eval_dict = model.model_fn(
-      model.EVAL,
-      net,
-      test_batch,
-      test_labels,
+      mode=model.EVAL,
+      net=net,
+      input_batch=test_batch,
+      labels=test_labels,
     )
 
     crossent_loss = eval_dict['crossentropy']

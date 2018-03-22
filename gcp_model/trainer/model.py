@@ -478,6 +478,8 @@ class WaveNetModel(object):
                     if l2_weight is None:
                         outputs['loss'] = reduced_loss
                     else:
+                        tf.logging.info("Calculating regularized loss with\
+L2 = {}".format(l2_weight))
                         # L2 regularization term
                         # https://github.com/ibab/tensorflow-wavenet
                         l2_loss = tf.add_n(
